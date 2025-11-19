@@ -1,7 +1,7 @@
 """
-API 路由包。
-
-仅定义路由分组与版本划分，不实现业务逻辑。
+API 路由模块。
 """
 
+from app.api.router import api_router
 
+__all__ = ["api_router"]

@@ -1,11 +1,25 @@
 """
-海浪环境模型业务服务包。
+业务服务模块。
 
-按功能拆分为：
-- `wind`：风场模型（当前为固定风模型，后续可扩展为随时间变化模型）
-- `spectrum`：波浪谱模型（Pierson-Moskowitz、JONSWAP 等）
-- `simulation`：区域海浪模拟（在离散网格上计算海浪高度场）
-- `interpolation`：单点查询插值（空间双线性插值）
+包含风场、波浪谱、区域模拟、插值等服务。
 """
 
+from app.services.interpolation import query_point
+from app.services.simulation import (
+    advance_wave_field,
+    create_wave_grid,
+    initialize_wave_field,
+    simulate_area,
+)
+from app.services.spectrum import generate_spectrum
+from app.services.wind import create_wind_field
 
+__all__ = [
+    "create_wind_field",
+    "generate_spectrum",
+    "initialize_wave_field",
+    "advance_wave_field",
+    "simulate_area",
+    "create_wave_grid",
+    "query_point",
+]

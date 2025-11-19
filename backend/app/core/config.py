@@ -7,7 +7,11 @@
 - 默认风场模型 / 波浪谱模型选择
 """
 
-from pydantic import BaseSettings
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    # Pydantic 1.x 兼容
+    from pydantic import BaseSettings
 
 
 class Settings(BaseSettings):
