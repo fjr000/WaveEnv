@@ -1,0 +1,26 @@
+[project]
+name = "waveenv-backend"
+version = "0.1.0"
+description = "时变海浪环境模型后端服务（FastAPI）"
+authors = [
+  { name = "WaveEnv", email = "example@example.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "httpx",
+  "ruff",
+  "mypy"
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+

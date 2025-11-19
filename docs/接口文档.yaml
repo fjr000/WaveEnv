@@ -1,0 +1,453 @@
+openapi: 3.0.3
+info:
+  title: Time-varying Wave Field Simulation API
+  version: 1.0.0
+  description: |
+    时变海浪环境模型 Web 服务接口定义。
+    - 支持对指定区域进行海浪高度模拟（时变）
+    - 支持基于模拟结果进行单点查询
+    - 输入输出统一使用 JSON 和经纬度坐标
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+paths:
+  /simulate/area:
+    post:
+      summary: 创建区域海浪模拟任务
+      description: |
+        根据输入的区域、风场参数、波浪谱参数以及离散化和时间设置，创建一次区域海浪模拟任务。
+        返回 simulation_id，用于后续查询模拟结果或做单点查询。
+      operationId: createAreaSimulation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AreaSimulationRequest'
+      responses:
+        '201':
+          description: 模拟任务创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AreaSimulationResponse'
+        '400':
+          description: 请求参数错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 服务器内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /simulation/{simulationId}/frames:
+    get:
+      summary: 获取区域模拟结果帧
+      description: |
+        根据 simulation_id 获取该模拟任务的海浪高度场结果。
+        可通过可选参数限制时间范围或帧数量。
+      operationId: getSimulationFrames
+      parameters:
+        - name: simulationId
+          in: path
+          required: true
+          description: 区域模拟任务 ID
+          schema:
+            type: string
+        - name: time_min
+          in: query
+          required: false
+          description: 起始时间（秒），相对于 t=0 的偏移
+          schema:
+            type: number
+            format: float
+        - name: time_max
+          in: query
+          required: false
+          description: 结束时间（秒），相对于 t=0 的偏移
+          schema:
+            type: number
+            format: float
+        - name: max_frames
+          in: query
+          required: false
+          description: 返回的最大时间帧数量上限
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+      responses:
+        '200':
+          description: 成功返回模拟时间序列帧
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationFramesResponse'
+        '404':
+          description: 未找到对应的 simulationId
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 服务器内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /query/point:
+    post:
+      summary: 单点海浪高度查询
+      description: |
+        基于指定的 simulation_id，在已有区域模拟结果上对某一经纬度点进行插值查询。
+        空间插值采用双线性插值，时间可线性插值或取最近帧（由实现决定）。
+      operationId: queryWaveAtPoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PointQueryRequest'
+      responses:
+        '200':
+          description: 返回指定点的海浪高度
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PointQueryResponse'
+        '400':
+          description: 请求参数错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 未找到对应的 simulationId 或时间超出范围
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 服务器内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
+components:
+  schemas:
+    # ======== 基础结构 ========
+    Region:
+      type: object
+      description: |
+        矩形区域，采用经纬度 + 深度，由对角两个点描述。
+        深度用于控制波高上限，避免浅水区域出现过高海浪。
+      properties:
+        lon_min:
+          type: number
+          format: float
+          description: 最小经度（度）
+        lat_min:
+          type: number
+          format: float
+          description: 最小纬度（度）
+        depth_min:
+          type: number
+          format: float
+          description: 对应点水深（米）
+        lon_max:
+          type: number
+          format: float
+          description: 最大经度（度）
+        lat_max:
+          type: number
+          format: float
+          description: 最大纬度（度）
+        depth_max:
+          type: number
+          format: float
+          description: 对应点水深（米）
+      required:
+        - lon_min
+        - lat_min
+        - depth_min
+        - lon_max
+        - lat_max
+        - depth_max
+
+    WindConfig:
+      type: object
+      description: 风场模型参数（当前版本为固定风场）
+      properties:
+        wind_speed:
+          type: number
+          format: float
+          description: 风速（m/s）
+          default: 10.0
+        wind_direction_deg:
+          type: number
+          format: float
+          description: >
+            风向（度）。约定：0° 表示从北向南，角度顺时针增加（例如 90° 从东往西）。
+          default: 270.0
+        reference_height_m:
+          type: number
+          format: float
+          description: 风速参考高度（米），例如 10m 高度
+          default: 10.0
+      required:
+        - wind_speed
+        - wind_direction_deg
+
+    SpectrumConfig:
+      type: object
+      description: 波浪谱模型参数（Pierson-Moskowitz or JONSWAP）
+      properties:
+        spectrum_model_type:
+          type: string
+          description: 光谱模型类型
+          enum: [PM, JONSWAP]
+          default: PM
+        Hs:
+          type: number
+          format: float
+          description: 显著波高（m）
+          default: 2.0
+        Tp:
+          type: number
+          format: float
+          description: 峰值周期（s）
+          default: 8.0
+        main_wave_direction_deg:
+          type: number
+          format: float
+          description: 主浪向（度），通常与风向接近
+        directional_spread_deg:
+          type: number
+          format: float
+          description: 波向扩散宽度（度）
+          default: 30.0
+        gamma:
+          type: number
+          format: float
+          description: JONSWAP 峰锐系数，仅 spectrum_model_type = JONSWAP 时使用
+          default: 3.3
+      required:
+        - spectrum_model_type
+        - Hs
+        - Tp
+
+    DiscretizationConfig:
+      type: object
+      description: 空间离散化配置
+      properties:
+        dx:
+          type: number
+          format: float
+          description: 经度方向离散间隔（度或等效距离，具体约定在实现中说明）
+          default: 0.01
+        dy:
+          type: number
+          format: float
+          description: 纬度方向离散间隔（度或等效距离）
+          default: 0.01
+        max_points:
+          type: integer
+          description: 最大离散点数量上限，用于控制性能和内存
+          default: 40000
+      required:
+        - dx
+        - dy
+        - max_points
+
+    TimeConfig:
+      type: object
+      description: 时间离散配置
+      properties:
+        dt_backend:
+          type: number
+          format: float
+          description: 后端仿真时间步长（秒），例如 0.2 表示 200ms
+          default: 0.2
+        T_total:
+          type: number
+          format: float
+          description: 总仿真时长（秒）
+          default: 10.0
+      required:
+        - dt_backend
+        - T_total
+
+    WavePoint:
+      type: object
+      description: 某一时刻某一点的海浪高度
+      properties:
+        lon:
+          type: number
+          format: float
+          description: 经度（度）
+        lat:
+          type: number
+          format: float
+          description: 纬度（度）
+        wave_height:
+          type: number
+          format: float
+          description: 海浪高度（米）
+      required:
+        - lon
+        - lat
+        - wave_height
+
+    SimulationFrame:
+      type: object
+      description: 某一时刻的区域海浪高度场
+      properties:
+        time:
+          type: number
+          format: float
+          description: 时间（秒），相对于 t=0 的偏移
+        region:
+          $ref: '#/components/schemas/Region'
+        points:
+          type: array
+          description: 该区域内离散点的海浪高度数据
+          items:
+            $ref: '#/components/schemas/WavePoint'
+      required:
+        - time
+        - region
+        - points
+
+    SimulationStatus:
+      type: string
+      description: 模拟任务状态
+      enum: [pending, running, completed, failed]
+
+    # ======== 请求 / 响应结构 ========
+    AreaSimulationRequest:
+      type: object
+      description: 创建区域模拟任务请求体
+      properties:
+        region:
+          $ref: '#/components/schemas/Region'
+        wind:
+          $ref: '#/components/schemas/WindConfig'
+        spectrum:
+          $ref: '#/components/schemas/SpectrumConfig'
+        discretization:
+          $ref: '#/components/schemas/DiscretizationConfig'
+        time:
+          $ref: '#/components/schemas/TimeConfig'
+      required:
+        - region
+        - wind
+        - spectrum
+        - discretization
+        - time
+
+    AreaSimulationResponse:
+      type: object
+      description: 创建区域模拟任务的响应
+      properties:
+        simulation_id:
+          type: string
+          description: 模拟任务唯一 ID
+        status:
+          $ref: '#/components/schemas/SimulationStatus'
+      required:
+        - simulation_id
+        - status
+
+    SimulationFramesResponse:
+      type: object
+      description: 区域模拟结果（多帧）
+      properties:
+        simulation_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/SimulationStatus'
+        frames:
+          type: array
+          items:
+            $ref: '#/components/schemas/SimulationFrame'
+      required:
+        - simulation_id
+        - status
+        - frames
+
+    PointQueryRequest:
+      type: object
+      description: 单点查询请求体
+      properties:
+        simulation_id:
+          type: string
+          description: 对应的区域模拟任务 ID
+        lon:
+          type: number
+          format: float
+          description: 查询点经度（度）
+        lat:
+          type: number
+          format: float
+          description: 查询点纬度（度）
+        time:
+          type: number
+          format: float
+          description: 查询时间（秒），相对于 t=0 的偏移
+      required:
+        - simulation_id
+        - lon
+        - lat
+        - time
+
+    PointQueryResponse:
+      type: object
+      description: 单点查询响应体
+      properties:
+        simulation_id:
+          type: string
+        time:
+          type: number
+          format: float
+        lon:
+          type: number
+          format: float
+        lat:
+          type: number
+          format: float
+        wave_height:
+          type: number
+          format: float
+      required:
+        - simulation_id
+        - time
+        - lon
+        - lat
+        - wave_height
+
+    ErrorResponse:
+      type: object
+      description: 通用错误响应
+      properties:
+        code:
+          type: string
+          description: 错误码
+        message:
+          type: string
+          description: 错误描述
+        details:
+          type: object
+          additionalProperties: true
+          description: 可选的详细错误信息
+      required:
+        - code
+        - message
