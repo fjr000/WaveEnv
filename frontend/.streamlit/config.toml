@@ -1,17 +1,9 @@
-[theme]
-primaryColor = "#1f77b4"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f0f2f6"
-textColor = "#262730"
-font = "sans serif"
-
 [server]
-port = 8501
-address = "localhost"
-enableCORS = true
-enableXsrfProtection = false
 headless = true
+port = 8888
+enableCORS = false
+enableXsrfProtection = false
+address = "localhost"
 
 [browser]
 gatherUsageStats = false
-
