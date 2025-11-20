@@ -4,13 +4,6 @@ API 端点测试。
 使用 httpx 测试 FastAPI 端点。
 """
 
-import sys
-from pathlib import Path
-
-# 添加 backend 目录到路径
-backend_path = Path(__file__).parent.parent.parent / "backend"
-sys.path.insert(0, str(backend_path))
-
 import pytest
 from fastapi.testclient import TestClient
 

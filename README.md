@@ -7,7 +7,7 @@
 本系统实现了一个**时变海浪环境模型**，采用前后端分离架构：
 
 - **后端**：基于 Python + FastAPI，负责海浪物理模型模拟、区域计算、单点查询等核心功能
-- **前端**：负责参数配置、区域可视化、动态渲染等交互功能
+- **前端**：基于 Streamlit，负责参数配置、区域可视化、动态渲染等交互功能
 - **模型**：支持风场模型（当前为固定风场）与波浪谱模型（Pierson-Moskowitz / JONSWAP）的组合
 
 ### 核心功能
@@ -32,9 +32,9 @@ WaveEnv/
 │   ├── pyproject.toml   # Python 项目配置
 │   └── README.md        # 后端说明文档
 │
-├── frontend/            # 前端应用（规划：Vite + React + TypeScript）
-│   ├── public/          # 静态资源
-│   ├── src/             # 前端源码
+├── frontend/            # 前端应用（Streamlit）
+│   ├── app.py           # Streamlit 主应用文件
+│   ├── requirements.txt # 前端依赖
 │   └── README.md        # 前端说明文档
 │
 ├── tests/               # 测试目录
@@ -56,8 +56,7 @@ WaveEnv/
 
 ### 环境要求
 
-- **Python**: 3.9+（后端）
-- **Node.js**: 18+（前端，待实现）
+- **Python**: 3.8（后端和前端）
 - **Git**: 用于版本管理
 
 ### 后端开发
@@ -83,14 +82,18 @@ uvicorn app.main:app --reload
 # 进入前端目录
 cd frontend
 
-# 初始化项目（待实现，示例）
-pnpm install
+# 安装依赖（推荐使用虚拟环境）
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
 
-# 启动开发服务器
-pnpm dev
+# 启动 Streamlit 应用
+streamlit run app.py
 ```
 
-> **注意**：当前阶段项目结构已搭建完成，但具体业务逻辑尚未实现。详细开发指南请参考各子目录的 README.md。
+应用将在 `http://localhost:8501` 启动。
+
+> **注意**：前端通过 HTTP 调用后端 FastAPI 服务，请确保后端服务已启动（默认 `http://localhost:8000`）。
 
 ## 📚 文档说明
 
@@ -107,15 +110,16 @@ pnpm dev
 ### 后端
 
 - **框架**: FastAPI
-- **语言**: Python 3.9+
+- **语言**: Python 3.8
 - **数据验证**: Pydantic
 - **ASGI 服务器**: Uvicorn
 
-### 前端（规划）
+### 前端
 
-- **构建工具**: Vite
-- **框架**: React + TypeScript
-- **包管理**: pnpm（**必须使用 pnpm，不使用 npm/yarn**）
+- **框架**: Streamlit
+- **语言**: Python 3.8
+- **可视化**: Plotly / Matplotlib / Folium
+- **HTTP 客户端**: httpx（用于调用后端 API）
 
 ### 开发工具
 
@@ -127,17 +131,17 @@ pnpm dev
 
 - ✅ 项目结构搭建完成
 - ✅ Git 仓库初始化完成
-- ✅ 后端基础结构（占位文件）已创建
-- ✅ 前端目录结构已规划
-- ✅ 文档已整理到 `docs/` 目录
-- ⏳ 后端业务逻辑实现（进行中）
-- ⏳ 前端应用实现（待开始）
+- ✅ 后端业务逻辑实现完成
+- ✅ 后端 API 接口实现完成
+- ✅ Streamlit 前端基础结构已创建
+- ⏳ Streamlit 前端功能实现（进行中）
+- ⏳ 可视化组件开发（待开始）
 
 ## 🤝 贡献指南
 
 1. 遵循项目目录结构与命名规范
-2. 后端代码遵循 Python PEP 8 规范
-3. 前端统一使用 `pnpm` 管理依赖
+2. 代码遵循 Python PEP 8 规范
+3. 前后端统一使用 Python 虚拟环境管理依赖
 4. 提交前运行测试与代码检查
 
 ## 📄 许可证

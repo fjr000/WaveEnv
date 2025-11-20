@@ -1,0 +1,21 @@
+# Streamlit Frontend Dependencies
+# Python 3.8 Compatible
+
+# Web Framework
+streamlit>=1.28.0
+
+# HTTP Client (for calling FastAPI backend)
+httpx>=0.24.0
+
+# Data Processing
+numpy>=1.21.0
+pandas>=1.5.0
+
+# Visualization
+plotly>=5.17.0
+matplotlib>=3.7.0
+folium>=0.14.0
+
+# Optional: For better performance
+pyarrow>=12.0.0
+

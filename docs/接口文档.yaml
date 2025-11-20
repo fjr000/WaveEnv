@@ -7,13 +7,16 @@ info:
     - 支持对指定区域进行海浪高度模拟（时变）
     - 支持基于模拟结果进行单点查询
     - 输入输出统一使用 JSON 和经纬度坐标
+    - 后端技术栈：Python 3.8 + FastAPI
+    - 前端技术栈：Python 3.8 + Streamlit
+    - 时间单位：秒（s）
 
 servers:
   - url: http://localhost:8000
     description: Local development server
 
 paths:
-  /simulate/area:
+  /api/simulate/area:
     post:
       summary: 创建区域海浪模拟任务
       description: |
@@ -46,7 +49,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /simulation/{simulationId}/frames:
+  /api/simulation/{simulationId}/frames:
     get:
       summary: 获取区域模拟结果帧
       description: |
@@ -102,7 +105,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /query/point:
+  /api/query/point:
     post:
       summary: 单点海浪高度查询
       description: |

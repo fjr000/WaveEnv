@@ -163,3 +163,4 @@ def _create_frame(
 
     return SimulationFrame(time=float(time), region=region, points=points)
 
+
