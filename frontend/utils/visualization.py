@@ -65,31 +65,31 @@ def create_heatmap(
         )
     else:
         # 标准模式：使用Contour等高线图（支持hover查询高度）
-    fig = go.Figure(
-        data=go.Contour(
+        fig = go.Figure(
+            data=go.Contour(
                 x=x_data,
                 y=y_data,
-            z=height_grid,
-            colorscale="Viridis",
-            colorbar=dict(
-                title=dict(
-                    text="海浪高度 (m)",
-                    font=dict(size=12),
+                z=height_grid,
+                colorscale="Viridis",
+                colorbar=dict(
+                    title=dict(
+                        text="海浪高度 (m)",
+                        font=dict(size=12),
+                    ),
                 ),
-            ),
-            contours=dict(
+                contours=dict(
                     showlines=True,  # 显示等高线
                     showlabels=True,  # 显示等高线标签
-                labelfont=dict(size=10),
-            ),
-            hovertemplate=(
-                "经度: %{x:.4f}°<br>"
-                "纬度: %{y:.4f}°<br>"
-                "海浪高度: %{z:.4f} m<extra></extra>"
-            ),
+                    labelfont=dict(size=10),
+                ),
+                hovertemplate=(
+                    "经度: %{x:.4f}°<br>"
+                    "纬度: %{y:.4f}°<br>"
+                    "海浪高度: %{z:.4f} m<extra></extra>"
+                ),
                 ncontours=20,  # 等高线数量
+            )
         )
-    )
 
     # 设置标题
     if title is None:
