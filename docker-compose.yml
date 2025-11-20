@@ -1,0 +1,94 @@
+version: '3.8'
+
+# WaveEnv Docker Compose 配置
+# 使用说明：
+# 1. 复制 .env.example 为 .env 并根据需要修改配置
+# 2. 只启动后端: docker-compose up -d backend
+# 3. 启动所有服务: docker-compose up -d
+# 4. 启用前端: 设置 FRONTEND_PROFILE=frontend 或使用 docker-compose --profile frontend up -d
+
+# 服务配置
+services:
+  # 后端服务（必需）
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: waveenv-backend
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # 可以添加其他环境变量
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      # 开发模式：挂载代码目录（生产环境建议注释掉）
+      # - ./backend:/app
+    networks:
+      - waveenv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # 资源限制（可选）
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 2G
+    #     reservations:
+    #       cpus: '1'
+    #       memory: 1G
+
+  # 前端服务（可选，通过环境变量控制）
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: waveenv-frontend
+    ports:
+      - "${FRONTEND_PORT:-8888}:8888"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # 后端服务地址（Docker 环境下使用服务名）
+      - BACKEND_URL=${BACKEND_URL:-http://backend:8000}
+      # Streamlit 配置
+      - STREAMLIT_SERVER_PORT=8888
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    volumes:
+      # 开发模式：挂载代码目录（生产环境建议注释掉）
+      # - ./frontend:/app
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - waveenv-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(5); result=s.connect_ex(('localhost', 8888)); s.close(); exit(0 if result==0 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    # 通过 profiles 控制是否启动前端
+    # 默认启用前端，要禁用前端时设置 FRONTEND_PROFILE="" 或使用 --profile frontend 标志
+    profiles:
+      - "${FRONTEND_PROFILE:-frontend}"
+    # 如果 FRONTEND_PROFILE 为空，则不启动前端服务
+    # 资源限制（可选）
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1'
+    #       memory: 1G
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 512M
+
+networks:
+  waveenv-network:
+    driver: bridge

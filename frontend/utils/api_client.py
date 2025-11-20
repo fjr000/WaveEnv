@@ -9,8 +9,9 @@ import httpx
 from typing import Dict, Optional, List
 
 
-# 后端服务地址
-BACKEND_URL = "http://localhost:8000"
+# 后端服务地址（可通过环境变量配置，Docker环境下使用服务名）
+import os
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 
 class APIClient:

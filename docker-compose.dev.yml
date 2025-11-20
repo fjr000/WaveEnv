@@ -1,0 +1,23 @@
+version: '3.8'
+
+# 开发环境 Docker Compose 配置
+# 使用方式: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+services:
+  backend:
+    # 开发模式：挂载代码目录，支持热重载
+    volumes:
+      - ./backend:/app
+    # 开发环境启用自动重载
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  frontend:
+    # 开发模式：挂载代码目录
+    volumes:
+      - ./frontend:/app
+    environment:
+      - STREAMLIT_SERVER_RUN_ON_SAVE=true
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
+
