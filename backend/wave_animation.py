@@ -1,11 +1,13 @@
 """
-海浪演变网格可视化演示脚本。
+海浪演变网格可视化演示脚本（实时模式）。
 
-使用后端模拟服务生成海浪高度场，并显示多个时间步的静态图像展示海浪的演变过程。
+使用后端模拟服务生成海浪高度场，使用真实时间时钟实时显示海浪的演变过程。
+每个时间步按照 dt_backend 的真实时间间隔计算和显示。
 """
 
 import sys
 import os
+import time
 
 # 添加backend目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -31,7 +33,6 @@ for backend_name in backends_to_try:
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
-from app.services.simulation import simulate_area
 from app.services.simulation_stream import simulate_area_stream
 from app.schemas.base import (
     Region,
@@ -129,86 +130,54 @@ def create_wave_animation():
     print(f"区域: 经度 [{region.lon_min}, {region.lon_max}], "
           f"纬度 [{region.lat_min}, {region.lat_max}]")
     print(f"风速: {wind_config.wind_speed} m/s, 风向: {wind_config.wind_direction_deg}°")
+    total_time_text = (
+        f"{time_config.T_total} s" if time_config.T_total is not None else "∞"
+    )
     print(f"显著波高: {spectrum_config.Hs} m, 峰值周期: {spectrum_config.Tp} s")
-    print(f"时间步长: {time_config.dt_backend} s, 总时长: {time_config.T_total} s")
+    print(f"时间步长: {time_config.dt_backend} s, 总时长: {total_time_text}")
     print()
     
-    print("正在运行模拟（流式模式，实时获取结果）...")
+    print("正在初始化模拟步进器...")
     sys.stdout.flush()
     
-    # 使用流式模拟，实时获取每个时间步的结果
-    frames = []
-    grid_points = None
-    wave_heights_list = []
-    times_list = []
-    
+    # 使用异步流式模拟，创建步进器实例
     try:
-        # 使用流式模拟生成器
-        frame_generator = simulate_area_stream(
+        import asyncio
+        
+        # 创建事件循环（如果是同步环境，创建新循环）
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # 异步创建步进器
+        stepper = loop.run_until_complete(
+            simulate_area_stream(
             region=region,
             wind_config=wind_config,
             spectrum_config=spectrum_config,
             discretization_config=discretization_config,
             time_config=time_config,
         )
-        
-        print("开始接收实时数据...")
-        for frame_idx, frame in enumerate(frame_generator):
-            frames.append(frame)
-            
-            # 第一次获取网格点信息
-            if grid_points is None:
-                grid_points = frame.points
-                n_points = len(grid_points)
-                print(f"  网格点数: {n_points}")
-            
-            # 提取当前时间步的海浪高度
-            times_list.append(frame.time)
-            wave_heights_list.append([p.wave_height for p in frame.points])
-            
-            # 每10个时间步显示一次进度
-            if frame_idx % 10 == 0 or frame_idx == 0:
-                print(f"  已接收时间步 {frame_idx+1}: t = {frame.time:.2f} s", flush=True)
-        
-        n_times = len(frames)
-        print(f"✓ 模拟完成，共生成 {n_times} 个时间帧")
-        sys.stdout.flush()
-        
-        # 转换为numpy数组
-        times = np.array(times_list)
-        wave_heights = np.array(wave_heights_list)
-        
-    except Exception as e:
-        print(f"❌ 模拟失败: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.stdout.flush()
-        return
-    
-    # 转换为2D网格
-    print("正在转换网格数据...")
-    try:
-        lon_grid, lat_grid, height_grid = grid_points_to_2d_array(
-            frames[0].points, 
-            wave_heights
         )
         
-        print(f"✓ 网格尺寸: {height_grid.shape[1]} x {height_grid.shape[2]}")
+        total_steps = stepper.get_total_steps()
+        print(f"✓ 步进器初始化完成")
+        print(f"  网格点数: {len(stepper.grid_points)}")
+        total_time_text = (
+            f"{time_config.T_total} s" if time_config.T_total is not None else "∞"
+        )
+        print(f"  总时间步数: {total_steps}")
+        print(f"  时间步长: {time_config.dt_backend} s")
+        print(f"  总时长: {total_time_text}")
+        print()
+        
     except Exception as e:
-        print(f"❌ 网格转换失败: {e}")
+        print(f"❌ 模拟初始化失败: {e}")
         import traceback
         traceback.print_exc()
-        return
-    
-    # 计算颜色范围（使用所有时间步的最小值和最大值）
-    try:
-        vmin = height_grid.min()
-        vmax = height_grid.max()
-        print(f"✓ 海浪高度范围: [{vmin:.3f}, {vmax:.3f}] 米")
-    except Exception as e:
-        print(f"❌ 计算颜色范围失败: {e}")
-        import traceback
-        traceback.print_exc()
+        sys.stdout.flush()
         return
     
     # 创建自定义颜色映射（蓝色到白色到绿色，模拟海洋）
@@ -217,17 +186,16 @@ def create_wave_animation():
     n_bins = 256
     cmap = LinearSegmentedColormap.from_list('ocean', colors, N=n_bins)
     
-    # 使用交互模式实时更新显示
-    print("\n正在创建实时更新图像...")
+    # 检查matplotlib后端
+    print("正在检查matplotlib后端...")
     current_backend = matplotlib.get_backend()
     print(f"使用matplotlib后端: {current_backend}")
     
     if current_backend.lower() == 'agg':
         print("⚠️  警告: 当前使用的是非交互式后端(agg)，无法实时更新！")
         print("请尝试安装GUI后端: pip install PyQt5 或确保tkinter可用")
-        print("将改为保存静态图像...")
-        # 回退到静态显示
-        _show_static_images(lon_grid, lat_grid, height_grid, times, cmap, vmin, vmax, n_times)
+        print("将使用静态显示模式...")
+        _show_static_mode(stepper, cmap, time_config)
         return
     
     # 启用交互模式
@@ -237,92 +205,298 @@ def create_wave_animation():
         # 创建单个图形窗口
         fig, ax = plt.subplots(figsize=(12, 10))
         
-        # 初始化图像
-        im = None
-        contour_lines = None
+        # 初始化变量
+        lon_grid = None
+        lat_grid = None
+        vmin = None
+        vmax = None
         cbar = None
+        frame_count = 0
         
-        print("开始实时更新显示...")
+        print("开始实时动画显示（使用真实时间时钟）...")
         print("提示: 关闭窗口或按Ctrl+C停止")
         print()
         
-        # 实时更新循环
-        import time
-        update_interval = 0.1  # 更新间隔（秒）
+        # 获取初始帧（t=0）
+        first_frame = stepper.step()
+        if first_frame is None:
+            print("❌ 无法获取初始帧")
+            return
         
-        for time_idx in range(n_times):
-            # 清除之前的图形元素
-            ax.clear()
+        # 初始化网格和颜色范围
+        lon_grid, lat_grid, height_grid_2d = _frame_to_2d_array(first_frame)
+        vmin = height_grid_2d.min()
+        vmax = height_grid_2d.max()
+        
+        # 动态更新颜色范围（初始值）
+        vmin_init = vmin
+        vmax_init = vmax
+        
+        print(f"初始网格尺寸: {height_grid_2d.shape[0]} x {height_grid_2d.shape[1]}")
+        print(f"初始高度范围: [{vmin:.3f}, {vmax:.3f}] 米")
+        print()
             
-            # 绘制等高线填充
-            im = ax.contourf(
-                lon_grid, lat_grid, height_grid[time_idx],
-                levels=50,
-                cmap=cmap,
-                vmin=vmin,
-                vmax=vmax,
-                extend='both'
-            )
+        # 真实时间循环
+        dt = time_config.dt_backend  # 使用真实时间步长
+        start_time = time.time()  # 记录开始时间（真实时间）
+        last_real_time = start_time  # 上一帧的真实时间
+        
+        # 显示初始帧
+        cbar = _update_display(
+            ax, lon_grid, lat_grid, height_grid_2d,
+            first_frame.time, cmap, vmin, vmax, cbar
+        )
+        plt.tight_layout()
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        frame_count += 1
+        
+        real_time_elapsed = time.time() - start_time
+        print(f"t = {first_frame.time:.2f} s | 真实时间: {real_time_elapsed:.2f} s")
+        
+        # 真实时间循环：按照 dt_backend 的时间间隔调用 step()
+        # 使用当前时间与上一帧时间的差值来控制时间步进
+        while not stepper.is_completed:
+            # 记录当前真实时间
+            current_real_time = time.time()
             
-            # 添加等高线
-            contour_lines = ax.contour(
-                lon_grid, lat_grid, height_grid[time_idx],
-                levels=20,
-                colors='black',
-                alpha=0.3,
-                linewidths=0.5
-            )
+            # 计算从上一次到现在经过的真实时间
+            elapsed_since_last = current_real_time - last_real_time
             
-            # 设置标题和标签
-            ax.set_xlabel('经度 (°)', fontsize=12)
-            ax.set_ylabel('纬度 (°)', fontsize=12)
-            ax.set_title(
-                f'海浪演变 - t = {times[time_idx]:.2f} s | '
-                f'最大: {height_grid[time_idx].max():.3f} m, '
-                f'最小: {height_grid[time_idx].min():.3f} m',
-                fontsize=14, fontweight='bold'
-            )
-            ax.grid(True, alpha=0.3, linestyle='--')
+            # 如果经过的时间小于 dt，则等待剩余的间隔
+            if elapsed_since_last < dt:
+                sleep_time = dt - elapsed_since_last
+                time.sleep(sleep_time)
+                # 更新当前时间（包括睡眠后的时间）
+                current_real_time = time.time()
             
-            # 添加颜色条（只在第一次添加）
-            if cbar is None:
-                cbar = plt.colorbar(im, ax=ax, label='海浪高度 (米)', shrink=0.8)
+            # 如果经过的时间已经超过 dt，则不休眠，立即计算下一帧
+            # 这样可以确保即使计算超时也不会累积延迟
+            
+            # 更新上一帧的真实时间
+            last_real_time = current_real_time
+            
+            # 调用 step() 方法，计算下一个时间步
+            frame = stepper.step()
+            
+            if frame is None:
+                # 如果没有帧返回，说明已完成
+                break
+            
+            # 转换为2D数组
+            lon_grid, lat_grid, height_grid_2d = _frame_to_2d_array(frame)
+            
+            # 动态更新颜色范围（使用滑动窗口或当前所有帧的最小/最大值）
+            current_min = height_grid_2d.min()
+            current_max = height_grid_2d.max()
+            vmin = min(vmin, current_min) if vmin is not None else current_min
+            vmax = max(vmax, current_max) if vmax is not None else current_max
             
             # 更新显示
+            cbar = _update_display(
+                ax, lon_grid, lat_grid, height_grid_2d,
+                frame.time, cmap, vmin, vmax, cbar
+            )
+            
             plt.tight_layout()
             fig.canvas.draw()
             fig.canvas.flush_events()
+            frame_count += 1
+            
+            # 计算真实时间流逝
+            real_time_elapsed = current_real_time - start_time
             
             # 显示进度
-            if time_idx % 5 == 0 or time_idx == n_times - 1:
-                progress = (time_idx + 1) / n_times * 100
-                print(f"\r进度: {progress:.1f}% | t = {times[time_idx]:.2f} s", end='', flush=True)
-            
-            # 控制更新速度
-            time.sleep(update_interval)
+            progress = stepper.get_current_step() / total_steps * 100
+            print(
+                f"\rt = {frame.time:.2f} s | "
+                f"真实时间: {real_time_elapsed:.2f} s | "
+                f"进度: {progress:.1f}% | "
+                f"高度: [{current_min:.3f}, {current_max:.3f}] m",
+                end='', flush=True
+            )
             
             # 检查窗口是否关闭
             if not plt.get_fignums():
                 print("\n窗口已关闭")
                 break
         
-        print("\n✓ 实时更新完成")
+        total_real_time = time.time() - start_time
+        print(f"\n✓ 实时动画完成")
+        print(f"  总帧数: {frame_count}")
+        if time_config.T_total is not None:
+            print(f"  模拟时间: {time_config.T_total:.2f} s")
+            print(f"  真实时间: {total_real_time:.2f} s")
+            print(f"  时间加速比: {time_config.T_total / total_real_time:.2f}x")
+        else:
+            print("  模拟时间: ∞ (无限制模式)")
+            print(f"  真实时间: {total_real_time:.2f} s")
         
         # 保持窗口打开
-        print("窗口将保持打开，按Enter键关闭...")
+        print("\n窗口将保持打开，按Enter键关闭...")
         plt.ioff()  # 关闭交互模式
         plt.show(block=True)
         
     except KeyboardInterrupt:
-        print("\n\n更新已中断")
+        print("\n\n动画已中断")
         plt.ioff()
     except Exception as e:
-        print(f"\n❌ 实时更新失败: {e}")
+        print(f"\n❌ 实时动画失败: {e}")
         import traceback
         traceback.print_exc()
         plt.ioff()
-        # 回退到静态显示
-        _show_static_images(lon_grid, lat_grid, height_grid, times, cmap, vmin, vmax, n_times)
+
+
+def _frame_to_2d_array(frame):
+    """
+    将单个帧转换为2D网格数组。
+    
+    Args:
+        frame: SimulationFrame对象
+    
+    Returns:
+        (lon_grid, lat_grid, height_grid): 2D网格数组
+    """
+    grid_points = frame.points
+    wave_heights = np.array([p.wave_height for p in grid_points])
+    
+    # 提取唯一的经纬度值
+    lons = sorted(set(p.lon for p in grid_points))
+    lats = sorted(set(p.lat for p in grid_points))
+    
+    n_lon = len(lons)
+    n_lat = len(lats)
+    
+    # 创建2D网格
+    lon_grid, lat_grid = np.meshgrid(lons, lats)
+    
+    # 创建经纬度到索引的映射
+    lon_to_idx = {lon: i for i, lon in enumerate(lons)}
+    lat_to_idx = {lat: i for i, lat in enumerate(lats)}
+    
+    # 创建高度网格
+    height_grid = np.zeros((n_lat, n_lon))
+    point_dict = {(p.lon, p.lat): p.wave_height for p in grid_points}
+    
+    for i, lon in enumerate(lons):
+        for j, lat in enumerate(lats):
+            if (lon, lat) in point_dict:
+                height_grid[j, i] = point_dict[(lon, lat)]
+    
+    return lon_grid, lat_grid, height_grid
+
+
+def _update_display(ax, lon_grid, lat_grid, height_grid, current_time, cmap, vmin, vmax, cbar):
+    """
+    更新显示内容。
+    
+    Args:
+        ax: matplotlib axes对象
+        lon_grid: 经度网格
+        lat_grid: 纬度网格
+        height_grid: 高度网格（2D）
+        current_time: 当前时间
+        cmap: 颜色映射
+        vmin: 最小高度
+        vmax: 最大高度
+        cbar: 颜色条对象（如果已创建）
+    """
+    # 清除之前的图形元素
+    ax.clear()
+    
+    # 绘制等高线填充
+    im = ax.contourf(
+        lon_grid, lat_grid, height_grid,
+        levels=50,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        extend='both'
+    )
+    
+    # 添加等高线
+    ax.contour(
+        lon_grid, lat_grid, height_grid,
+        levels=20,
+        colors='black',
+        alpha=0.3,
+        linewidths=0.5
+    )
+    
+    # 设置标题和标签
+    ax.set_xlabel('经度 (°)', fontsize=12)
+    ax.set_ylabel('纬度 (°)', fontsize=12)
+    ax.set_title(
+        f'海浪演变（实时） - t = {current_time:.2f} s | '
+        f'最大: {height_grid.max():.3f} m, '
+        f'最小: {height_grid.min():.3f} m',
+        fontsize=14, fontweight='bold'
+    )
+    ax.grid(True, alpha=0.3, linestyle='--')
+    
+    # 添加或更新颜色条
+    if cbar is None:
+        # 第一次创建颜色条
+        cbar = plt.colorbar(im, ax=ax, label='海浪高度 (米)', shrink=0.8)
+    else:
+        # 更新颜色条：由于 ax.clear() 清除了之前的图像，需要重新创建 colorbar
+        # 移除旧的 colorbar
+        try:
+            cbar.remove()
+        except Exception:
+            pass  # 如果移除失败，忽略
+        # 创建新的 colorbar
+        cbar = plt.colorbar(im, ax=ax, label='海浪高度 (米)', shrink=0.8)
+    
+    # 设置颜色条的范围（通过 mappable 对象）
+    if hasattr(cbar, 'mappable') and cbar.mappable is not None:
+        cbar.mappable.set_clim(vmin, vmax)
+    
+    return cbar
+
+
+def _show_static_mode(stepper, cmap, time_config):
+    """静态模式：先计算所有帧，然后显示"""
+    print("\n使用静态模式（先计算所有帧，然后显示）...")
+    
+    # 收集所有帧
+    frames = []
+    frame = stepper.step()  # 获取初始帧
+    if frame is None:
+        print("❌ 无法获取初始帧")
+        return
+    
+    frames.append(frame)
+    print(f"  已获取帧 1: t = {frame.time:.2f} s")
+    
+    # 计算所有帧
+    while not stepper.is_completed:
+        time.sleep(0.001)  # 短暂延迟，避免占用太多CPU
+        frame = stepper.step()
+        if frame is None:
+            break
+        frames.append(frame)
+        if len(frames) % 10 == 0:
+            print(f"  已获取帧 {len(frames)}: t = {frame.time:.2f} s")
+    
+    print(f"✓ 所有帧计算完成，共 {len(frames)} 帧")
+    
+    # 转换为2D网格
+    times = [f.time for f in frames]
+    wave_heights_list = [[p.wave_height for p in f.points] for f in frames]
+    wave_heights = np.array(wave_heights_list)
+    
+    lon_grid, lat_grid, height_grid = grid_points_to_2d_array(
+        frames[0].points, 
+        wave_heights
+    )
+    
+    # 计算颜色范围
+    vmin = height_grid.min()
+    vmax = height_grid.max()
+    
+    # 显示静态图像
+    _show_static_images(lon_grid, lat_grid, height_grid, np.array(times), cmap, vmin, vmax, len(frames))
 
 
 def _show_static_images(lon_grid, lat_grid, height_grid, times, cmap, vmin, vmax, n_times):

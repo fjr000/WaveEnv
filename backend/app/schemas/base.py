@@ -105,7 +105,14 @@ class TimeConfig(BaseModel):
         gt=0,
         description="后端仿真时间步长（秒），例如 0.2 表示 200ms",
     )
-    T_total: float = Field(
-        default=10.0, gt=0, description="总仿真时长（秒）"
+    T_total: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="总仿真时长（秒），None 表示无限制持续运行",
+    )
+    cache_retention_time: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="缓存保留时间（秒），None 表示不限制，超过此时间的旧帧将被淘汰。例如 60 表示只保留最近 60 秒的帧",
     )
 

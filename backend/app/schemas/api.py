@@ -47,7 +47,7 @@ class PointQueryRequest(BaseModel):
     simulation_id: str = Field(..., description="对应的区域模拟任务 ID")
     lon: float = Field(..., description="查询点经度（度）")
     lat: float = Field(..., description="查询点纬度（度）")
-    time: float = Field(..., description="查询时间（秒），相对于 t=0 的偏移")
+    time: float = Field(..., description="查询时间（秒），相对于 t=0 的偏移。time=-1 表示获取最新帧的信息")
 
 
 class PointQueryResponse(BaseModel):

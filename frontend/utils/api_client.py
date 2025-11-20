@@ -25,10 +25,13 @@ class APIClient:
         """
         self.base_url = base_url
         # 配置客户端，禁用代理避免 502 错误
+        # 使用连接池复用连接，减少连接数
         self.client = httpx.Client(
             timeout=30.0,
             follow_redirects=True,
             proxies=None,  # 禁用代理
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),  # 限制连接数
+            http2=False,  # 禁用 HTTP/2，避免连接问题
         )
 
     def create_simulation(
@@ -130,16 +133,69 @@ class APIClient:
             httpx.HTTPStatusError: API 调用失败
             httpx.RequestError: 网络请求失败
         """
-        request_data = {
+        params = {
             "simulation_id": simulation_id,
             "lon": lon,
             "lat": lat,
             "time": time,
         }
 
-        response = self.client.post(
+        response = self.client.get(
             f"{self.base_url}/api/query/point",
-            json=request_data,
+            params=params,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def pause_clock(self, simulation_id: str) -> Dict:
+        """暂停指定模拟任务的时钟。"""
+        response = self.client.post(
+            f"{self.base_url}/api/simulation/{simulation_id}/clock/pause"
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def resume_clock(self, simulation_id: str) -> Dict:
+        """恢复指定模拟任务的时钟。"""
+        response = self.client.post(
+            f"{self.base_url}/api/simulation/{simulation_id}/clock/resume"
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def stop_simulation(self, simulation_id: str) -> Dict:
+        """停止指定模拟任务。"""
+        response = self.client.post(
+            f"{self.base_url}/api/simulation/{simulation_id}/stop"
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def list_simulations(self, status: Optional[str] = None) -> Dict:
+        """
+        获取所有仿真任务列表。
+        
+        Args:
+            status: 可选的状态过滤器（如 "running", "paused" 等）
+        
+        Returns:
+            包含任务列表的字典
+        """
+        params = {}
+        if status:
+            params["status"] = status
+        
+        response = self.client.get(
+            f"{self.base_url}/api/simulations",
+            params=params
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def stop_all_simulations(self) -> Dict:
+        """停止所有运行中的仿真任务。"""
+        response = self.client.post(
+            f"{self.base_url}/api/simulations/stop-all"
         )
         response.raise_for_status()
         return response.json()

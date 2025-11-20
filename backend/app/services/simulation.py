@@ -143,7 +143,10 @@ def simulate_area(
     # 4. 初始化 t=0 海浪场
     initial_height = initialize_wave_field(spectrum, grid_points)
 
-    # 5. 生成时间序列
+    # 5. 生成时间序列（离线模式必须提供总时长）
+    if time_config.T_total is None:
+        raise ValueError("TimeConfig.T_total is required for offline simulation mode.")
+
     dt = time_config.dt_backend
     T_total = time_config.T_total
     times = np.arange(0, T_total + dt / 2, dt)  # 包含 t=0 和 T_total
@@ -212,7 +215,10 @@ def create_wave_grid(
     wind = create_wind_field(wind_config)
     spectrum = generate_spectrum(wind, spectrum_config)
 
-    # 初始化并时间步进
+    # 初始化并时间步进（离线模式必须提供总时长）
+    if time_config.T_total is None:
+        raise ValueError("TimeConfig.T_total is required for offline simulation mode.")
+
     dt = time_config.dt_backend
     T_total = time_config.T_total
     times = np.arange(0, T_total + dt / 2, dt)

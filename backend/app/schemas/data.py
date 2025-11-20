@@ -17,6 +17,8 @@ class SimulationStatus(str, Enum):
 
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
+    STOPPED = "stopped"
     COMPLETED = "completed"
     FAILED = "failed"
 
