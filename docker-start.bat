@@ -5,13 +5,29 @@ setlocal enabledelayedexpansion
 
 REM 检查 .env 文件
 if not exist .env (
-    echo [WARN] .env 文件不存在，从 .env.example 创建...
+    echo [WARN] .env 文件不存在，尝试从模板创建...
     if exist .env.example (
         copy .env.example .env >nul
-        echo [INFO] 已创建 .env 文件，请根据需要修改配置
+        echo [INFO] 已从 .env.example 创建 .env 文件
+    ) else if exist env.example (
+        copy env.example .env >nul
+        echo [INFO] 已从 env.example 创建 .env 文件
     ) else (
-        echo [ERROR] .env.example 文件不存在
-        exit /b 1
+        echo [WARN] 模板文件不存在，创建默认 .env 文件...
+        (
+            echo # WaveEnv Docker 环境变量配置
+            echo # 后端服务端口
+            echo BACKEND_PORT=8000
+            echo # 前端服务端口
+            echo FRONTEND_PORT=8888
+            echo # 是否启用前端服务（设置为空字符串则只启动后端）
+            echo FRONTEND_PROFILE=frontend
+            echo # 后端服务地址（Docker环境使用服务名）
+            echo BACKEND_URL=http://backend:8000
+            echo # 日志级别
+            echo LOG_LEVEL=INFO
+        ) > .env
+        echo [INFO] 已创建默认 .env 文件，请根据需要修改配置
     )
 )
 

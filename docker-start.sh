@@ -24,13 +24,29 @@ print_error() {
 
 # 检查 .env 文件
 if [ ! -f .env ]; then
-    print_warn ".env 文件不存在，从 .env.example 创建..."
+    print_warn ".env 文件不存在，尝试从模板创建..."
     if [ -f .env.example ]; then
         cp .env.example .env
-        print_info "已创建 .env 文件，请根据需要修改配置"
+        print_info "已从 .env.example 创建 .env 文件"
+    elif [ -f env.example ]; then
+        cp env.example .env
+        print_info "已从 env.example 创建 .env 文件"
     else
-        print_error ".env.example 文件不存在"
-        exit 1
+        print_warn "模板文件不存在，创建默认 .env 文件..."
+        cat > .env << 'EOF'
+# WaveEnv Docker 环境变量配置
+# 后端服务端口
+BACKEND_PORT=8000
+# 前端服务端口
+FRONTEND_PORT=8888
+# 是否启用前端服务（设置为空字符串则只启动后端）
+FRONTEND_PROFILE=frontend
+# 后端服务地址（Docker环境使用服务名）
+BACKEND_URL=http://backend:8000
+# 日志级别
+LOG_LEVEL=INFO
+EOF
+        print_info "已创建默认 .env 文件，请根据需要修改配置"
     fi
 fi
 
