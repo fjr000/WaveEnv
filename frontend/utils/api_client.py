@@ -97,7 +97,7 @@ class APIClient:
         params = {"time": time}
 
         response = self.client.get(
-            f"{self.base_url}/api/simulation/{simulation_id}/frames",
+            f"{self.base_url}/api/query/simulation/{simulation_id}/frames",
             params=params,
         )
         response.raise_for_status()
@@ -179,7 +179,7 @@ class APIClient:
             params["status"] = status
         
         response = self.client.get(
-            f"{self.base_url}/api/simulations",
+            f"{self.base_url}/api/query/simulations",
             params=params
         )
         response.raise_for_status()

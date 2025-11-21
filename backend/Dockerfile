@@ -36,7 +36,7 @@ RUN if [ -f requirements.txt ]; then \
         pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn; \
     else \
         pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn \
-            fastapi uvicorn[standard] pydantic pydantic-settings "numpy>=1.21.0,<1.24.0" httpx; \
+            fastapi uvicorn[standard] pydantic "numpy>=1.21.0,<1.24.0"; \
     fi
 
 # 复制应用代码（构建上下文是项目根目录，需要复制 backend 目录）

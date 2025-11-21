@@ -1,12 +1,13 @@
 openapi: 3.0.3
 info:
   title: Time-varying Wave Field Simulation API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     时变海浪环境模型 Web 服务接口定义。
     - 支持对指定区域进行海浪高度模拟（时变）
     - 支持基于模拟结果进行单点查询
     - 输入输出统一使用 JSON 和经纬度坐标
+    - 接口只支持单时刻查询，time=-1 表示获取最新帧
     - 后端技术栈：Python 3.8 + FastAPI
     - 前端技术栈：Python 3.8 + Streamlit
     - 时间单位：秒（s）
@@ -29,6 +30,36 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/AreaSimulationRequest'
+            examples:
+              default:
+                summary: 默认配置示例（与前端默认值一致）
+                value:
+                  region:
+                    lon_min: 120.0
+                    lat_min: 30.0
+                    depth_min: 50.0
+                    lon_max: 120.5
+                    lat_max: 30.5
+                    depth_max: 100.0
+                  wind:
+                    wind_speed: 10.0
+                    wind_direction_deg: 270.0
+                    reference_height_m: 10.0
+                  spectrum:
+                    spectrum_model_type: PM
+                    Hs: 2.0
+                    Tp: 8.0
+                    main_wave_direction_deg: null
+                    directional_spread_deg: 30.0
+                    gamma: 3.3
+                  discretization:
+                    dx: 0.05
+                    dy: 0.05
+                    max_points: 5000
+                  time:
+                    dt_backend: 0.2
+                    T_total: null
+                    cache_retention_time: null
       responses:
         '201':
           description: 模拟任务创建成功
@@ -49,7 +80,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /api/simulation/{simulationId}/frames:
+  /api/query/simulation/{simulationId}/frames:
     get:
       summary: 获取区域模拟结果帧（单时刻）
       description: |
@@ -103,6 +134,7 @@ paths:
       description: |
         基于指定的 simulation_id，在已有区域模拟结果上对某一经纬度点进行插值查询。
         空间插值采用双线性插值，时间可线性插值或取最近帧（由实现决定）。
+        特殊值：time=-1 表示查询最新帧的数据。
       operationId: queryWaveAtPoint
       requestBody:
         required: true
@@ -150,26 +182,32 @@ components:
           type: number
           format: float
           description: 最小经度（度）
+          x-example: 120.0
         lat_min:
           type: number
           format: float
           description: 最小纬度（度）
+          x-example: 30.0
         depth_min:
           type: number
           format: float
           description: 对应点水深（米）
+          x-example: 50.0
         lon_max:
           type: number
           format: float
           description: 最大经度（度）
+          x-example: 120.5
         lat_max:
           type: number
           format: float
           description: 最大纬度（度）
+          x-example: 30.5
         depth_max:
           type: number
           format: float
           description: 对应点水深（米）
+          x-example: 100.0
       required:
         - lon_min
         - lat_min
@@ -248,16 +286,19 @@ components:
           type: number
           format: float
           description: 经度方向离散间隔（度或等效距离，具体约定在实现中说明）
-          default: 0.01
+          default: 0.05
+          x-example: 0.05
         dy:
           type: number
           format: float
           description: 纬度方向离散间隔（度或等效距离）
-          default: 0.01
+          default: 0.05
+          x-example: 0.05
         max_points:
           type: integer
           description: 最大离散点数量上限，用于控制性能和内存
-          default: 40000
+          default: 5000
+          x-example: 5000
       required:
         - dx
         - dy
@@ -270,16 +311,34 @@ components:
         dt_backend:
           type: number
           format: float
-          description: 后端仿真时间步长（秒），例如 0.2 表示 200ms
+          description: 后端仿真时间步长（秒），例如 0.2 表示 200ms，必须大于 0
           default: 0.2
+          minimum: 0
+          exclusiveMinimum: true
         T_total:
-          type: number
-          format: float
-          description: 总仿真时长（秒）
-          default: 10.0
+          oneOf:
+            - type: number
+              format: float
+            - type: "null"
+          description: |
+            总仿真时长（秒）。
+            - null 或 -1：表示无限制持续运行
+            - 正数：指定总仿真时长，必须大于 0
+          default: null
+          x-example: null
+        cache_retention_time:
+          oneOf:
+            - type: number
+              format: float
+            - type: "null"
+          description: |
+            缓存保留时间（秒），用于控制内存使用。
+            - null：不限制，保留所有历史帧
+            - 正数：只保留最近 N 秒的帧，超过此时间的旧帧将被自动淘汰
+          default: null
+          x-example: 60.0
       required:
         - dt_backend
-        - T_total
 
     WavePoint:
       type: object
@@ -368,11 +427,17 @@ components:
       properties:
         simulation_id:
           type: string
+          description: 模拟任务 ID
         status:
           $ref: '#/components/schemas/SimulationStatus'
+          description: 模拟任务当前状态
         frames:
           type: array
-          description: 模拟结果帧列表（只包含一个指定时刻的帧）
+          description: |
+            模拟结果帧列表（只包含一个指定时刻的帧）。
+            如果请求 time=-1，则返回最新帧的实际时间。
+          minItems: 1
+          maxItems: 1
           items:
             $ref: '#/components/schemas/SimulationFrame'
       required:
@@ -398,7 +463,10 @@ components:
         time:
           type: number
           format: float
-          description: 查询时间（秒），相对于 t=0 的偏移
+          description: |
+            查询时间（秒），相对于 t=0 的偏移。
+            - time=-1：表示查询最新帧的数据
+            - 其他值：查询指定时刻的数据（系统会返回最接近该时刻的帧）
       required:
         - simulation_id
         - lon
@@ -411,18 +479,25 @@ components:
       properties:
         simulation_id:
           type: string
+          description: 模拟任务 ID
         time:
           type: number
           format: float
+          description: |
+            实际查询时间（秒），相对于 t=0 的偏移。
+            如果请求中 time=-1，则返回最新帧的实际时间
         lon:
           type: number
           format: float
+          description: 查询点经度（度）
         lat:
           type: number
           format: float
+          description: 查询点纬度（度）
         wave_height:
           type: number
           format: float
+          description: 查询点的海浪高度（米）
       required:
         - simulation_id
         - time

@@ -44,10 +44,10 @@ class SimulationFramesResponse(BaseModel):
 class PointQueryRequest(BaseModel):
     """单点查询请求体。"""
 
-    simulation_id: str = Field(..., description="对应的区域模拟任务 ID")
-    lon: float = Field(..., description="查询点经度（度）")
-    lat: float = Field(..., description="查询点纬度（度）")
-    time: float = Field(..., description="查询时间（秒），相对于 t=0 的偏移。time=-1 表示获取最新帧的信息")
+    simulation_id: str = Field(..., description="对应的区域模拟任务 ID", example="abcd-1234")
+    lon: float = Field(..., description="查询点经度（度）", example=120.25)
+    lat: float = Field(..., description="查询点纬度（度）", example=30.25)
+    time: float = Field(..., description="查询时间（秒），相对于 t=0 的偏移。time=-1 表示获取最新帧的信息", example=-1.0)
 
 
 class PointQueryResponse(BaseModel):

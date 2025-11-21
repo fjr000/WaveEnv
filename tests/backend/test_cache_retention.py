@@ -63,7 +63,7 @@ async def test_cache_retention_time(async_client):
     await asyncio.sleep(2.0)  # 等待2秒，应该产生约20个帧
 
     # 获取最新帧
-    frames_response = await async_client.get(f"/api/simulation/{simulation_id}/frames", params={"time": -1})
+    frames_response = await async_client.get(f"/api/query/simulation/{simulation_id}/frames", params={"time": -1})
     assert frames_response.status_code == 200
     frames_data = frames_response.json()
     assert len(frames_data["frames"]) == 1  # 只返回一个帧
@@ -94,7 +94,7 @@ async def test_cache_retention_time(async_client):
 
     # 测试3: 获取frames时，请求旧的时间（应该返回410）
     frames_response_old = await async_client.get(
-        f"/api/simulation/{simulation_id}/frames",
+        f"/api/query/simulation/{simulation_id}/frames",
         params={"time": old_time}
     )
     assert frames_response_old.status_code == 410, "获取已淘汰的帧应该返回 410 Gone"
@@ -145,7 +145,7 @@ async def test_no_cache_limit(async_client):
     await asyncio.sleep(1.5)
 
     # 获取最新帧
-    frames_response = await async_client.get(f"/api/simulation/{simulation_id}/frames", params={"time": -1})
+    frames_response = await async_client.get(f"/api/query/simulation/{simulation_id}/frames", params={"time": -1})
     assert frames_response.status_code == 200
     frames_data = frames_response.json()
     assert len(frames_data["frames"]) == 1  # 只返回一个帧

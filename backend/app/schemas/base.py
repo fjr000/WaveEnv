@@ -81,17 +81,17 @@ class DiscretizationConfig(BaseModel):
     """空间离散化配置。"""
 
     dx: float = Field(
-        default=0.01,
+        default=0.05,
         gt=0,
         description="经度方向离散间隔（度或等效距离）",
     )
     dy: float = Field(
-        default=0.01,
+        default=0.05,
         gt=0,
         description="纬度方向离散间隔（度或等效距离）",
     )
     max_points: int = Field(
-        default=40000,
+        default=5000,
         ge=1,
         description="最大离散点数量上限，用于控制性能和内存",
     )
