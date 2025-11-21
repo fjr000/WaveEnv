@@ -48,6 +48,12 @@ WaveEnv/
 │   ├── 接口文档.yaml    # OpenAPI 接口定义
 │   └── README.md        # 文档目录说明
 │
+├── docker-compose.yml   # Docker Compose 配置
+├── docker-start.bat     # Windows 启动脚本
+├── docker-start.sh      # Linux/macOS 启动脚本
+├── docker-stop.bat      # Windows 停止脚本
+├── docker-stop.sh       # Linux/macOS 停止脚本
+├── README.Docker.md     # Docker 部署详细文档
 ├── .gitignore           # Git 忽略规则
 └── README.md            # 本文件
 ```
@@ -95,6 +101,37 @@ streamlit run app.py
 
 > **注意**：前端通过 HTTP 调用后端 FastAPI 服务，请确保后端服务已启动（默认 `http://localhost:8000`）。
 
+### Docker 部署（推荐）
+
+使用 Docker Compose 可以快速部署整个系统，详见 [README.Docker.md](README.Docker.md)。
+
+**快速启动**：
+
+```bash
+# Windows
+docker-start.bat
+
+# Linux/macOS
+chmod +x docker-start.sh
+./docker-start.sh
+```
+
+**停止服务**：
+
+```bash
+# Windows
+docker-stop.bat
+
+# Linux/macOS
+chmod +x docker-stop.sh
+./docker-stop.sh
+```
+
+服务启动后：
+- 前端：`http://localhost:8888`
+- 后端 API：`http://localhost:8000`
+- API 文档：`http://localhost:8000/docs`
+
 ## 📚 文档说明
 
 项目文档统一存放在 `docs/` 目录：
@@ -127,15 +164,15 @@ streamlit run app.py
 - **代码质量**: ruff, mypy（后端）
 - **测试**: pytest（后端）
 
-## 📝 开发状态
+## 📝 项目状态
 
 - ✅ 项目结构搭建完成
-- ✅ Git 仓库初始化完成
 - ✅ 后端业务逻辑实现完成
 - ✅ 后端 API 接口实现完成
-- ✅ Streamlit 前端基础结构已创建
-- ⏳ Streamlit 前端功能实现（进行中）
-- ⏳ 可视化组件开发（待开始）
+- ✅ Streamlit 前端功能实现完成
+- ✅ 可视化组件开发完成
+- ✅ Docker 容器化部署支持
+- ✅ 单元测试和集成测试完成
 
 ## 🤝 贡献指南
 

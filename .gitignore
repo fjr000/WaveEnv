@@ -56,5 +56,37 @@ Thumbs.db
 # Local environment
 .env.local
 .env.*
+!.env.example
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+fix_commit_msg.txt
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Test reports and coverage
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+.pytest_cache/
+tests/backend/test_performance_report.md
 
 
