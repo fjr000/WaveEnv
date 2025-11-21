@@ -208,26 +208,29 @@ def check_backend_connection():
     import httpx
     import socket
     
-    # 先检查端口是否开放
-    try:
-        url_part = BACKEND_URL.replace("http://", "").replace("https://", "")
-        if ":" in url_part:
-            host, port = url_part.split(":")
-            port = int(port)
-        else:
-            host = url_part
-            port = 8000
-        
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)
-        result = sock.connect_ex(("127.0.0.1", port))
-        sock.close()
-        if result != 0:
-            # 端口未开放
-            return False
-    except Exception:
-        # 如果端口检查失败，继续尝试 HTTP 请求
-        pass
+    # 解析后端 URL
+    url_part = BACKEND_URL.replace("http://", "").replace("https://", "")
+    if ":" in url_part:
+        host, port = url_part.split(":")
+        port = int(port)
+    else:
+        host = url_part
+        port = 8000
+    
+    # 先检查端口是否开放（仅当 host 是 localhost 或 127.0.0.1 时）
+    # 在 Docker 环境中，使用服务名（如 "backend"）时，socket 检查不可靠
+    if host in ("localhost", "127.0.0.1"):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            if result != 0:
+                # 端口未开放
+                return False
+        except Exception:
+            # 如果端口检查失败，继续尝试 HTTP 请求
+            pass
     
     # 尝试 HTTP 连接（禁用代理）
     try:
@@ -881,23 +884,15 @@ def main():
                 
                 # 使用更短的超时时间，避免长时间阻塞用户操作
                 try:
-                    # 创建临时客户端，设置较短的超时时间
-                    import httpx
-                    with httpx.Client(timeout=5.0, proxies=None) as client:
-                        # 如果使用最新帧，传入 -1
-                        query_time_value = -1.0 if st.session_state.use_latest_frame else st.session_state.query_time
-                        params = {
-                            "simulation_id": st.session_state.simulation_id,
-                            "lon": query_lon,
-                            "lat": query_lat,
-                            "time": query_time_value,
-                        }
-                        response = client.get(
-                            f"http://localhost:8000/api/query/point",
-                            params=params,
+                    # 使用 APIClient（会自动使用 BACKEND_URL 环境变量，Docker 环境中使用服务名）
+                    query_time_value = -1.0 if st.session_state.use_latest_frame else st.session_state.query_time
+                    with APIClient() as api_client:
+                        result = api_client.query_point(
+                            simulation_id=st.session_state.simulation_id,
+                            lon=query_lon,
+                            lat=query_lat,
+                            time=query_time_value,
                         )
-                        response.raise_for_status()
-                        result = response.json()
                     st.session_state.query_result = result
                     # 不显示额外的成功消息，避免界面闪烁
                     # Streamlit按钮点击会自动触发重新运行

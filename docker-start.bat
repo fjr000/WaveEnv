@@ -1,42 +1,51 @@
 @echo off
-REM Docker 启动脚本 (Windows)
-
+REM Docker Startup Script (Windows)
+chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 
-REM 检查 .env 文件
+REM Check if Docker is available
+docker ps >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Docker is not running or not available.
+    echo Please start Docker Desktop and wait for it to be ready.
+    echo.
+    exit /b 1
+)
+
+REM Check .env file
 if not exist .env (
-    echo [WARN] .env 文件不存在，尝试从模板创建...
+    echo [WARN] .env file not found, creating from template...
     if exist .env.example (
         copy .env.example .env >nul
-        echo [INFO] 已从 .env.example 创建 .env 文件
+        echo [INFO] Created .env from .env.example
     ) else if exist env.example (
         copy env.example .env >nul
-        echo [INFO] 已从 env.example 创建 .env 文件
+        echo [INFO] Created .env from env.example
     ) else (
-        echo [WARN] 模板文件不存在，创建默认 .env 文件...
+        echo [WARN] Template file not found, creating default .env...
         (
-            echo # WaveEnv Docker 环境变量配置
-            echo # 后端服务端口
+            echo # WaveEnv Docker Environment Variables
+            echo # Backend service port
             echo BACKEND_PORT=8000
-            echo # 前端服务端口
+            echo # Frontend service port
             echo FRONTEND_PORT=8888
-            echo # 是否启用前端服务（设置为空字符串则只启动后端）
+            echo # Enable frontend service (set empty to disable)
             echo FRONTEND_PROFILE=frontend
-            echo # 后端服务地址（Docker环境使用服务名）
+            echo # Backend service URL (use service name in Docker)
             echo BACKEND_URL=http://backend:8000
-            echo # 日志级别
+            echo # Log level
             echo LOG_LEVEL=INFO
         ) > .env
-        echo [INFO] 已创建默认 .env 文件，请根据需要修改配置
+        echo [INFO] Created default .env file, please modify as needed
     )
 )
 
-REM 默认配置
+REM Default configuration
 set MODE=prod
 set ENABLE_FRONTEND=true
 set COMPOSE_FILES=docker-compose.yml
 
-REM 解析命令行参数
+REM Parse command line arguments
 :parse_args
 if "%~1"=="" goto end_parse
 if /i "%~1"=="--dev" (
@@ -79,61 +88,80 @@ if /i "%~1"=="--frontend" (
     goto parse_args
 )
 if /i "%~1"=="--help" (
-    echo 用法: %~nx0 [选项]
+    echo Usage: %~nx0 [options]
     echo.
-    echo 选项:
-    echo   --dev, --development      开发模式（挂载代码目录，启用热重载）
-    echo   --prod, --production      生产模式（默认）
-    echo   --backend-only            只启动后端服务
-    echo   --frontend                启用前端服务（默认）
-    echo   --help                    显示此帮助信息
+    echo Options:
+    echo   --dev, --development      Development mode (mount code, enable hot reload)
+    echo   --prod, --production      Production mode (default)
+    echo   --backend-only            Start backend service only
+    echo   --frontend                Enable frontend service (default)
+    echo   --help                    Show this help message
     echo.
-    echo 示例:
-    echo   %~nx0                      # 生产模式，启动所有服务
-    echo   %~nx0 --dev                # 开发模式，启动所有服务
-    echo   %~nx0 --backend-only       # 只启动后端服务
+    echo Examples:
+    echo   %~nx0                      # Production mode, start all services
+    echo   %~nx0 --dev                # Development mode, start all services
+    echo   %~nx0 --backend-only       # Start backend service only
     exit /b 0
 )
 if /i "%~1"=="-h" (
     goto :parse_args --help
 )
-echo [ERROR] 未知参数: %~1
-echo 使用 --help 查看帮助信息
+echo [ERROR] Unknown parameter: %~1
+echo Use --help to view help information
 exit /b 1
 :end_parse
 
-REM 显示配置信息
-echo [INFO] 启动模式: %MODE%
-echo [INFO] 启用前端: %ENABLE_FRONTEND%
+REM Display configuration
+echo [INFO] Mode: %MODE%
+echo [INFO] Frontend enabled: %ENABLE_FRONTEND%
 
-REM 构建并启动服务
-if "%ENABLE_FRONTEND%"=="true" (
-    echo [INFO] 启动所有服务（后端 + 前端）...
-    docker-compose -f %COMPOSE_FILES% up -d --build
-) else (
-    echo [INFO] 只启动后端服务...
-    docker-compose -f %COMPOSE_FILES% up -d --build backend
+REM Check if Python 3.8-slim image exists (Huawei Cloud mirror)
+set PYTHON_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.8-slim
+docker images %PYTHON_IMAGE% | findstr /C:"ddn-k8s" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Pulling Python 3.8-slim image from Huawei Cloud mirror...
+    docker pull %PYTHON_IMAGE%
+    if errorlevel 1 (
+        echo [ERROR] Failed to pull Python 3.8-slim image from Huawei Cloud
+        echo Please check network connection or mirror address
+        exit /b 1
+    )
+)
+REM Always create alias for compatibility
+docker images python:3.8-slim | findstr /C:"python" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Creating image alias python:3.8-slim...
+    docker tag %PYTHON_IMAGE% python:3.8-slim
 )
 
-REM 等待服务启动
-echo [INFO] 等待服务启动...
+REM Build and start services
+if "%ENABLE_FRONTEND%"=="true" (
+    echo [INFO] Starting all services - backend and frontend...
+    call docker-compose -f !COMPOSE_FILES! --profile frontend up -d --build
+) else (
+    echo [INFO] Starting backend service only...
+    call docker-compose -f !COMPOSE_FILES! up -d --build backend
+)
+
+REM Wait for services to start
+echo [INFO] Waiting for services to start...
 timeout /t 5 /nobreak >nul
 
-REM 检查服务状态
-echo [INFO] 检查服务状态...
+REM Check service status
+echo [INFO] Checking service status...
 docker-compose -f docker-compose.yml ps
 
-echo [INFO] 启动完成！
+echo [INFO] Startup complete!
 echo.
-echo 访问地址:
+echo Access URLs:
 if "%ENABLE_FRONTEND%"=="true" (
-    echo   - 前端界面: http://localhost:8888
+    echo   - Frontend: http://localhost:8888
 )
-echo   - 后端 API: http://localhost:8000
-echo   - API 文档: http://localhost:8000/docs
+echo   - Backend API: http://localhost:8000
+echo   - API Docs: http://localhost:8000/docs
 echo.
-echo 查看日志: docker-compose logs -f
-echo 停止服务: docker-compose down
+echo View logs: docker-compose logs -f
+echo Stop services: docker-stop.bat
+echo   (or manually: docker-compose down)
 
 endlocal
-

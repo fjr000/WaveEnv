@@ -1,4 +1,4 @@
-version: '3.8'
+# version: '3.8'  # Docker Compose 3.8+ 不需要 version 字段
 
 # WaveEnv Docker Compose 配置
 # 使用说明：
@@ -21,7 +21,7 @@ services:
       - PYTHONUNBUFFERED=1
       # 可以添加其他环境变量
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    volumes:
+    # volumes:
       # 开发模式：挂载代码目录（生产环境建议注释掉）
       # - ./backend:/app
     networks:
@@ -59,7 +59,7 @@ services:
       - STREAMLIT_SERVER_PORT=8888
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
       - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
-    volumes:
+    # volumes:
       # 开发模式：挂载代码目录（生产环境建议注释掉）
       # - ./frontend:/app
     depends_on:

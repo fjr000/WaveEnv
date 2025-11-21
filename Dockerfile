@@ -1,7 +1,8 @@
 # 根目录 Dockerfile - 构建多阶段镜像
 # 此 Dockerfile 主要用于参考，实际部署建议使用 docker-compose.yml
 
-FROM python:3.11-slim as base
+# 使用华为云镜像源代理的 Python 官方镜像
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.8-slim as base
 
 # 设置工作目录
 WORKDIR /app
