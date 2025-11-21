@@ -51,10 +51,11 @@ paths:
 
   /api/simulation/{simulationId}/frames:
     get:
-      summary: 获取区域模拟结果帧
+      summary: 获取区域模拟结果帧（单时刻）
       description: |
-        根据 simulation_id 获取该模拟任务的海浪高度场结果。
-        可通过可选参数限制时间范围或帧数量。
+        根据 simulation_id 和时间点，获取该模拟任务在指定时刻的海浪高度场结果。
+        只返回单个时刻的数据。
+        特殊值：time=-1 表示使用最新帧的时间。
       operationId: getSimulationFrames
       parameters:
         - name: simulationId
@@ -63,35 +64,26 @@ paths:
           description: 区域模拟任务 ID
           schema:
             type: string
-        - name: time_min
+        - name: time
           in: query
-          required: false
-          description: 起始时间（秒），相对于 t=0 的偏移
+          required: true
+          description: 指定时间（秒），相对于 t=0 的偏移。time=-1 表示最新帧
           schema:
             type: number
             format: float
-        - name: time_max
-          in: query
-          required: false
-          description: 结束时间（秒），相对于 t=0 的偏移
-          schema:
-            type: number
-            format: float
-        - name: max_frames
-          in: query
-          required: false
-          description: 返回的最大时间帧数量上限
-          schema:
-            type: integer
-            minimum: 1
-            default: 100
       responses:
         '200':
-          description: 成功返回模拟时间序列帧
+          description: 成功返回指定时刻的模拟结果帧（单帧）
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SimulationFramesResponse'
+        '410':
+          description: 请求的时间已超出缓存保留范围
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: 未找到对应的 simulationId
           content:
@@ -372,7 +364,7 @@ components:
 
     SimulationFramesResponse:
       type: object
-      description: 区域模拟结果（多帧）
+      description: 区域模拟结果（单时刻，frames数组只包含一个帧）
       properties:
         simulation_id:
           type: string
@@ -380,6 +372,7 @@ components:
           $ref: '#/components/schemas/SimulationStatus'
         frames:
           type: array
+          description: 模拟结果帧列表（只包含一个指定时刻的帧）
           items:
             $ref: '#/components/schemas/SimulationFrame'
       required:

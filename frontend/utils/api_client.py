@@ -78,31 +78,23 @@ class APIClient:
     def get_frames(
         self,
         simulation_id: str,
-        time_min: Optional[float] = None,
-        time_max: Optional[float] = None,
-        max_frames: int = 100,
+        time: float,
     ) -> Dict:
         """
-        获取模拟结果帧。
+        获取模拟结果帧（单时刻）。
 
         Args:
             simulation_id: 模拟任务 ID
-            time_min: 起始时间（秒）
-            time_max: 结束时间（秒）
-            max_frames: 最大帧数
+            time: 指定时间（秒），相对于 t=0 的偏移。time=-1 表示最新帧
 
         Returns:
-            包含 frames 列表的字典
+            包含 frames 列表的字典（只包含一个帧）
 
         Raises:
             httpx.HTTPStatusError: API 调用失败
             httpx.RequestError: 网络请求失败
         """
-        params = {"max_frames": max_frames}
-        if time_min is not None:
-            params["time_min"] = time_min
-        if time_max is not None:
-            params["time_max"] = time_max
+        params = {"time": time}
 
         response = self.client.get(
             f"{self.base_url}/api/simulation/{simulation_id}/frames",

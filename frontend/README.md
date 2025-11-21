@@ -98,7 +98,7 @@ streamlit run app.py
 前端通过以下 API 与后端交互：
 
 - `POST /api/simulate/area` - 创建区域模拟任务
-- `GET /api/simulation/{simulation_id}/frames` - 获取模拟结果帧
+- `GET /api/simulation/{simulation_id}/frames?time={time}` - 获取指定时刻的模拟结果帧（单时刻）
 - `POST /api/query/point` - 单点查询
 
 详细接口文档请参考 `docs/接口文档.yaml` 或访问后端 Swagger 文档 `http://localhost:8000/docs`。

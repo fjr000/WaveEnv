@@ -134,11 +134,11 @@ async def test_concurrent_query_frames(async_client):
     # 等待任务运行一段时间
     await asyncio.sleep(1.5)
 
-    # 并发查询所有任务的帧数据
+    # 并发查询所有任务的帧数据（获取最新帧）
     async def query_frames(sid: str) -> Tuple[str, float, bool]:
         start_time = time.time()
         try:
-            response = await async_client.get(f"/api/simulation/{sid}/frames")
+            response = await async_client.get(f"/api/simulation/{sid}/frames", params={"time": -1})
             elapsed = time.time() - start_time
             success = response.status_code == 200
             return sid, elapsed, success
@@ -353,7 +353,7 @@ async def test_mixed_concurrent_operations(async_client):
     # 第二阶段：同时进行多种操作
     async def query_operation(sid: str) -> Tuple[str, str, float]:
         start = time.time()
-        response = await async_client.get(f"/api/simulation/{sid}/frames")
+        response = await async_client.get(f"/api/simulation/{sid}/frames", params={"time": -1})
         return sid, "query_frames", time.time() - start
 
     async def point_operation(sid: str) -> Tuple[str, str, float]:
@@ -431,10 +431,10 @@ async def test_large_scale_concurrent(async_client):
     # 等待任务运行
     await asyncio.sleep(1.0)
 
-    # 并发查询所有任务
+    # 并发查询所有任务（获取最新帧）
     async def query_all(sid: str) -> Tuple[str, float]:
         start = time.time()
-        await async_client.get(f"/api/simulation/{sid}/frames")
+        await async_client.get(f"/api/simulation/{sid}/frames", params={"time": -1})
         return sid, time.time() - start
 
     start_time = time.time()

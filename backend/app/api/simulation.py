@@ -259,27 +259,22 @@ async def create_area_simulation(
 @router.get(
     "/simulation/{simulation_id}/frames",
     response_model=SimulationFramesResponse,
-    summary="获取区域模拟结果帧",
+    summary="获取区域模拟结果帧（单时刻）",
 )
 async def get_simulation_frames(
     simulation_id: str,
-    time_min: Optional[float] = Query(
-        None, description="起始时间（秒），相对于 t=0 的偏移。time_min=-1 表示从最新帧开始"
+    time: float = Query(
+        ..., description="指定时间（秒），相对于 t=0 的偏移。time=-1 表示最新帧"
     ),
-    time_max: Optional[float] = Query(
-        None, description="结束时间（秒），相对于 t=0 的偏移。time_max=-1 表示获取到最新帧"
-    ),
-    max_frames: int = Query(100, ge=1, description="返回的最大时间帧数量上限"),
 ) -> SimulationFramesResponse:
     """
-    获取区域模拟结果帧。
+    获取区域模拟结果帧（单时刻）。
 
-    根据 simulation_id 获取该模拟任务的海浪高度场结果。
-    可通过可选参数限制时间范围或帧数量。
+    根据 simulation_id 和时间点，获取该模拟任务在指定时刻的海浪高度场结果。
     
     优先使用流式存储的frames，如果不存在则使用wave_grid（向后兼容）。
     
-    特殊值：time_min=-1 或 time_max=-1 表示使用最新帧的时间。
+    特殊值：time=-1 表示使用最新帧的时间。
     """
     task = get_simulation_task(simulation_id)
     if task is None:
@@ -287,145 +282,113 @@ async def get_simulation_frames(
             status_code=404, detail=f"Simulation {simulation_id} not found"
         )
 
-    # 检查缓存保留时间配置，用于验证请求的时间是否在缓存范围内
-    cache_retention_time = task.time_config.cache_retention_time
-    cache_time_range = None
-    if cache_retention_time is not None and task.frames:
-        # 计算缓存的时间范围：[最新时间 - 保留时间, 最新时间]
-        latest_time = task.frames[-1].time
-        cache_time_range = (latest_time - cache_retention_time, latest_time)
-    
-    # 如果请求了具体的时间范围，检查是否在缓存中
-    if cache_time_range is not None:
-        if time_min is not None and time_min != -1:
-            if time_min < cache_time_range[0]:
-                raise HTTPException(
-                    status_code=410,  # 410 Gone - 资源已被淘汰
-                    detail=(
-                        f"请求的时间 {time_min:.2f} s 已超出缓存保留范围。"
-                        f"当前缓存范围: [{cache_time_range[0]:.2f}, {cache_time_range[1]:.2f}] s "
-                        f"(保留时间: {cache_retention_time:.2f} s)"
-                    )
-                )
-        if time_max is not None and time_max != -1:
-            if time_max < cache_time_range[0]:
-                raise HTTPException(
-                    status_code=410,
-                    detail=(
-                        f"请求的时间 {time_max:.2f} s 已超出缓存保留范围。"
-                        f"当前缓存范围: [{cache_time_range[0]:.2f}, {cache_time_range[1]:.2f}] s "
-                        f"(保留时间: {cache_retention_time:.2f} s)"
-                    )
-                )
-
-    # 优先使用流式存储的frames
-    if task.frames:
-        frames = task.frames
-        
-        # 处理 time_min=-1 或 time_max=-1 的特殊情况
-        if time_min == -1 or time_max == -1:
-            # 获取最新帧的时间
-            latest_time = frames[-1].time if frames else None
-            if latest_time is None:
-                return SimulationFramesResponse(
-                    simulation_id=simulation_id,
-                    status=task.status,
-                    frames=[],
-                )
-            # 替换 -1 为最新帧的时间
-            if time_min == -1:
-                time_min = latest_time
-            if time_max == -1:
-                time_max = latest_time
-    elif task.wave_grid is not None:
-        # 向后兼容：从wave_grid生成帧
-        wave_grid = task.wave_grid
-        frames = []
-
-        # 处理 time_min=-1 或 time_max=-1 的特殊情况
-        if time_min == -1 or time_max == -1:
-            # 获取最新帧的时间
-            latest_time = wave_grid.times[-1] if len(wave_grid.times) > 0 else None
-            if latest_time is None:
-                return SimulationFramesResponse(
-                    simulation_id=simulation_id,
-                    status=task.status,
-                    frames=[],
-                )
-            # 替换 -1 为最新帧的时间
-            if time_min == -1:
-                time_min = latest_time
-            if time_max == -1:
-                time_max = latest_time
-
-        # 时间过滤
-        times = wave_grid.times.copy()
-        if time_min is not None:
-            mask = times >= time_min
-            times = times[mask]
-        if time_max is not None:
-            mask = times <= time_max
-            times = times[mask]
-
-        # 如果过滤后没有时间点，返回空结果
-        if len(times) == 0:
+    # 处理 time=-1 的特殊情况（获取最新帧）
+    if time == -1:
+        if task.frames:
+            latest_frame = task.frames[-1]
             return SimulationFramesResponse(
                 simulation_id=simulation_id,
                 status=task.status,
-                frames=[],
+                frames=[latest_frame],
             )
-
-        # 限制帧数
-        if len(times) > max_frames:
-            indices = np.linspace(0, len(times) - 1, max_frames, dtype=int)
-            times = times[indices]
-
-        # 生成帧
-        for time in times:
-            time_idx = np.argmin(np.abs(wave_grid.times - time))
+        elif task.wave_grid is not None and len(task.wave_grid.times) > 0:
+            # 从 wave_grid 获取最新帧
+            latest_time = task.wave_grid.times[-1]
+            time_idx = len(task.wave_grid.times) - 1
             points = [
                 WavePoint(
                     lon=point.lon,
                     lat=point.lat,
                     wave_height=float(
-                        wave_grid.wave_heights[time_idx, i]
+                        task.wave_grid.wave_heights[time_idx, i]
                     ),
                 )
-                for i, point in enumerate(wave_grid.grid_points)
+                for i, point in enumerate(task.wave_grid.grid_points)
             ]
-
-            frames.append(
-                SimulationFrame(
-                    time=float(time), region=task.region, points=points
+            frame = SimulationFrame(
+                time=float(latest_time),
+                region=task.region,
+                points=points,
+            )
+            return SimulationFramesResponse(
+                simulation_id=simulation_id,
+                status=task.status,
+                frames=[frame],
+            )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Simulation {simulation_id} has no results yet",
+            )
+    
+    # 获取指定时刻的数据
+    target_time = time
+    
+    # 检查缓存保留时间配置
+    cache_retention_time = task.time_config.cache_retention_time
+    if cache_retention_time is not None and task.frames:
+        latest_time = task.frames[-1].time
+        cache_time_range = (latest_time - cache_retention_time, latest_time)
+        if target_time < cache_time_range[0]:
+            raise HTTPException(
+                status_code=410,
+                detail=(
+                    f"请求的时间 {target_time:.2f} s 已超出缓存保留范围。"
+                    f"当前缓存范围: [{cache_time_range[0]:.2f}, {cache_time_range[1]:.2f}] s "
+                    f"(保留时间: {cache_retention_time:.2f} s)"
                 )
             )
+    
+    # 优先使用流式存储的frames
+    if task.frames:
+        # 在frames中查找最接近的时间点
+        frames = task.frames
+        closest_frame = None
+        min_time_diff = float('inf')
+        
+        for frame in frames:
+            time_diff = abs(frame.time - target_time)
+            if time_diff < min_time_diff:
+                min_time_diff = time_diff
+                closest_frame = frame
+        
+        if closest_frame is not None:
+            return SimulationFramesResponse(
+                simulation_id=simulation_id,
+                status=task.status,
+                frames=[closest_frame],
+            )
+    elif task.wave_grid is not None:
+        # 从 wave_grid 获取指定时刻的数据
+        times = task.wave_grid.times
+        time_idx = np.argmin(np.abs(times - target_time))
+        actual_time = times[time_idx]
+        
+        points = [
+            WavePoint(
+                lon=point.lon,
+                lat=point.lat,
+                wave_height=float(
+                    task.wave_grid.wave_heights[time_idx, i]
+                ),
+            )
+            for i, point in enumerate(task.wave_grid.grid_points)
+        ]
+        frame = SimulationFrame(
+            time=float(actual_time),
+            region=task.region,
+            points=points,
+        )
+        return SimulationFramesResponse(
+            simulation_id=simulation_id,
+            status=task.status,
+            frames=[frame],
+        )
     else:
-        # 既没有frames也没有wave_grid
         raise HTTPException(
             status_code=404,
             detail=f"Simulation {simulation_id} has no results yet",
         )
-
-    # 对frames进行时间过滤和帧数限制
-    filtered_frames = frames
-    
-    # 时间过滤
-    if time_min is not None:
-        filtered_frames = [f for f in filtered_frames if f.time >= time_min]
-    if time_max is not None:
-        filtered_frames = [f for f in filtered_frames if f.time <= time_max]
-
-    # 限制帧数
-    if len(filtered_frames) > max_frames:
-        # 均匀采样
-        indices = np.linspace(0, len(filtered_frames) - 1, max_frames, dtype=int)
-        filtered_frames = [filtered_frames[i] for i in indices]
-
-    return SimulationFramesResponse(
-        simulation_id=simulation_id,
-        status=task.status,
-        frames=filtered_frames,
-    )
 
 
 def _ensure_task_for_control(simulation_id: str):

@@ -79,8 +79,8 @@ def simulation_id(client):
         time.sleep(wait_interval)
         elapsed += wait_interval
         
-        # 检查任务状态
-        response = client.get(f"/api/simulation/{simulation_id}/frames")
+        # 检查任务状态（获取最新帧）
+        response = client.get(f"/api/simulation/{simulation_id}/frames", params={"time": -1})
         if response.status_code == 200:
             status_data = response.json()
             if status_data["status"] == "completed":
@@ -165,8 +165,8 @@ def test_create_simulation(client):
         time.sleep(wait_interval)
         elapsed += wait_interval
         
-        # 检查任务状态
-        response = client.get(f"/api/simulation/{simulation_id}/frames")
+        # 检查任务状态（获取最新帧）
+        response = client.get(f"/api/simulation/{simulation_id}/frames", params={"time": -1})
         if response.status_code == 200:
             status_data = response.json()
             if status_data["status"] == "completed":
@@ -176,8 +176,8 @@ def test_create_simulation(client):
             # 继续等待
             continue
     else:
-        # 超时前，检查是否有帧数据（即使状态不是completed）
-        response = client.get(f"/api/simulation/{simulation_id}/frames")
+        # 超时前，检查是否有帧数据（即使状态不是completed，获取最新帧）
+        response = client.get(f"/api/simulation/{simulation_id}/frames", params={"time": -1})
         if response.status_code == 200:
             status_data = response.json()
             # 如果有帧数据，即使状态不是completed也算成功
@@ -188,24 +188,32 @@ def test_create_simulation(client):
 
 
 def test_get_simulation_frames(client, simulation_id):
-    """测试获取模拟结果。"""
+    """测试获取模拟结果（单时刻）。"""
 
-    # 获取结果
-    response = client.get(f"/api/simulation/{simulation_id}/frames")
+    # 获取最新帧
+    response = client.get(f"/api/simulation/{simulation_id}/frames", params={"time": -1})
     assert response.status_code == 200
 
     data = response.json()
     assert "simulation_id" in data
     assert "status" in data
     assert "frames" in data
-    assert len(data["frames"]) > 0
+    assert len(data["frames"]) == 1  # 只返回一个帧
 
-    # 检查第一帧
+    # 检查返回的帧
     frame = data["frames"][0]
     assert "time" in frame
     assert "region" in frame
     assert "points" in frame
     assert len(frame["points"]) > 0
+    
+    # 测试获取指定时刻的帧
+    frame_time = frame["time"]
+    response2 = client.get(f"/api/simulation/{simulation_id}/frames", params={"time": frame_time})
+    assert response2.status_code == 200
+    data2 = response2.json()
+    assert len(data2["frames"]) == 1
+    assert data2["frames"][0]["time"] == frame_time
 
 
 def test_query_point(client, simulation_id):
@@ -234,7 +242,7 @@ def test_query_point(client, simulation_id):
 
 def test_invalid_simulation_id(client):
     """测试无效的 simulation_id。"""
-    response = client.get("/api/simulation/invalid-id/frames")
+    response = client.get("/api/simulation/invalid-id/frames", params={"time": 0.0})
     assert response.status_code == 404
 
 

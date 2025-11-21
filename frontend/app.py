@@ -378,9 +378,7 @@ def main():
                 # 尝试获取初始帧（t=0），如果还没有则等待
                 frames_response = api_client.get_frames(
                     st.session_state.simulation_id,
-                    max_frames=1,  # 只获取初始帧
-                    time_min=0.0,
-                    time_max=0.0,
+                    time=0.0,  # 获取初始帧
                 )
                 
                 if frames_response["frames"]:
@@ -488,12 +486,12 @@ def main():
                     try:
                         # 使用非阻塞方式获取帧数据（快速超时，避免长时间阻塞）
                         with APIClient() as api_client:
-                            # 只获取新帧，减少数据传输
+                            # 获取最新帧
                             current_frame_count = len(st.session_state.frames) if st.session_state.frames else 0
                             # 设置较短的超时时间，避免阻塞用户操作
                             frames_response = api_client.get_frames(
                                 st.session_state.simulation_id,
-                                max_frames=1000,  # 获取所有可用帧
+                                time=-1,  # 获取最新帧
                             )
                         
                         # 检查模拟状态
@@ -511,12 +509,23 @@ def main():
                             st.session_state.simulation_completed = False
                         
                         # 更新frames列表（如果有了新的帧）
-                        if frames_response.get("frames"):
-                            new_frames = frames_response["frames"]
-                            # 检查帧是否有变化（比较帧数量）
-                            if len(new_frames) > current_frame_count:
-                                # 有新帧，需要更新
-                                st.session_state.frames = new_frames
+                        if frames_response.get("frames") and len(frames_response["frames"]) > 0:
+                            new_frame = frames_response["frames"][0]  # 只返回一个帧
+                            new_frame_time = new_frame.get("time", 0)
+                            
+                            # 检查是否有新的帧（通过比较时间）
+                            has_new_frame = True
+                            if st.session_state.frames and len(st.session_state.frames) > 0:
+                                latest_frame_time = st.session_state.frames[-1].get("time", -1)
+                                if new_frame_time <= latest_frame_time:
+                                    # 没有新帧，不需要更新
+                                    has_new_frame = False
+                            
+                            if has_new_frame:
+                                # 有新帧，添加到frames列表
+                                if st.session_state.frames is None:
+                                    st.session_state.frames = []
+                                st.session_state.frames.append(new_frame)
                                 # 重新转换为网格数据（这个操作可能较耗时）
                                 # 只在有新帧时才执行，减少不必要的转换
                                 # 使用try-except包装，确保转换失败不影响其他功能

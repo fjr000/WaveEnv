@@ -62,13 +62,13 @@ async def test_cache_retention_time(async_client):
     # 等待模拟运行一段时间，产生多个帧
     await asyncio.sleep(2.0)  # 等待2秒，应该产生约20个帧
 
-    # 获取最新帧的时间范围
-    frames_response = await async_client.get(f"/api/simulation/{simulation_id}/frames")
+    # 获取最新帧
+    frames_response = await async_client.get(f"/api/simulation/{simulation_id}/frames", params={"time": -1})
     assert frames_response.status_code == 200
     frames_data = frames_response.json()
-    assert len(frames_data["frames"]) > 0
+    assert len(frames_data["frames"]) == 1  # 只返回一个帧
 
-    latest_time = frames_data["frames"][-1]["time"]
+    latest_time = frames_data["frames"][0]["time"]
     
     # 测试1: 查询最新帧（应该在缓存中）
     query_params = {
@@ -92,10 +92,10 @@ async def test_cache_retention_time(async_client):
     assert query_response_old.status_code == 410, "查询已淘汰的帧应该返回 410 Gone"
     assert "缓存保留范围" in query_response_old.json()["detail"]
 
-    # 测试3: 获取frames时，请求旧的时间范围（应该返回410）
+    # 测试3: 获取frames时，请求旧的时间（应该返回410）
     frames_response_old = await async_client.get(
         f"/api/simulation/{simulation_id}/frames",
-        params={"time_min": old_time, "time_max": old_time + 0.1}
+        params={"time": old_time}
     )
     assert frames_response_old.status_code == 410, "获取已淘汰的帧应该返回 410 Gone"
 
@@ -144,14 +144,17 @@ async def test_no_cache_limit(async_client):
     # 等待模拟运行
     await asyncio.sleep(1.5)
 
-    # 获取所有帧
-    frames_response = await async_client.get(f"/api/simulation/{simulation_id}/frames")
+    # 获取最新帧
+    frames_response = await async_client.get(f"/api/simulation/{simulation_id}/frames", params={"time": -1})
     assert frames_response.status_code == 200
     frames_data = frames_response.json()
-    assert len(frames_data["frames"]) > 0
+    assert len(frames_data["frames"]) == 1  # 只返回一个帧
 
-    # 查询最早的帧（应该仍然在缓存中，因为不限制）
-    first_time = frames_data["frames"][0]["time"]
+    # 查询最新帧（应该仍然在缓存中）
+    latest_time = frames_data["frames"][0]["time"]
+    
+    # 获取最早时刻的帧（假设为0.0）
+    first_time = 0.0
     query_params = {
         "simulation_id": simulation_id,
         "lon": 120.05,

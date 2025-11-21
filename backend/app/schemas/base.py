@@ -107,12 +107,20 @@ class TimeConfig(BaseModel):
     )
     T_total: Optional[float] = Field(
         default=None,
-        gt=0,
-        description="总仿真时长（秒），None 表示无限制持续运行",
+        description="总仿真时长（秒），None 或 -1 表示无限制持续运行",
     )
     cache_retention_time: Optional[float] = Field(
         default=None,
         gt=0,
         description="缓存保留时间（秒），None 表示不限制，超过此时间的旧帧将被淘汰。例如 60 表示只保留最近 60 秒的帧",
     )
+
+    @validator("T_total")
+    def validate_T_total(cls, v):
+        """验证 T_total，-1 转换为 None 表示无限制。"""
+        if v is None or v == -1:
+            return None
+        if v <= 0:
+            raise ValueError("T_total must be greater than 0, or use -1/None for unlimited")
+        return v
 
