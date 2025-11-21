@@ -108,19 +108,44 @@ print_info "启用前端: $ENABLE_FRONTEND"
 # 构建并启动服务
 if [ "$ENABLE_FRONTEND" = true ]; then
     print_info "启动所有服务（后端 + 前端）..."
-    docker-compose -f $COMPOSE_FILES up -d --build
+    if ! docker-compose -f $COMPOSE_FILES up -d --build; then
+        print_error "服务启动失败！"
+        echo ""
+        echo "请运行诊断脚本查看详细信息："
+        echo "  ./docker-diagnose.sh"
+        echo ""
+        echo "或查看后端容器日志："
+        echo "  docker logs waveenv-backend"
+        exit 1
+    fi
 else
     print_info "只启动后端服务..."
-    docker-compose -f $COMPOSE_FILES up -d --build backend
+    if ! docker-compose -f $COMPOSE_FILES up -d --build backend; then
+        print_error "后端服务启动失败！"
+        echo ""
+        echo "请查看后端容器日志："
+        echo "  docker logs waveenv-backend"
+        exit 1
+    fi
 fi
 
-# 等待服务启动
-print_info "等待服务启动..."
-sleep 5
+# 等待服务启动（增加等待时间，给健康检查更多时间）
+print_info "等待服务启动（等待健康检查通过）..."
+sleep 10
 
 # 检查服务状态
 print_info "检查服务状态..."
 docker-compose -f docker-compose.yml ps
+
+# 检查后端容器健康状态
+if docker ps --format "{{.Names}}" | grep -q "waveenv-backend"; then
+    HEALTH_STATUS=$(docker inspect waveenv-backend --format="{{.State.Health.Status}}" 2>/dev/null)
+    if [ "$HEALTH_STATUS" != "healthy" ]; then
+        print_warn "后端容器可能未通过健康检查（状态: $HEALTH_STATUS）"
+        echo "查看后端日志: docker logs waveenv-backend"
+        echo "运行诊断脚本: ./docker-diagnose.sh"
+    fi
+fi
 
 print_info "启动完成！"
 echo ""

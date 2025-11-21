@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 from datetime import datetime
+import httpx
 
 # 添加当前目录到 Python 路径
 current_dir = Path(__file__).parent
@@ -20,6 +21,14 @@ if str(current_dir) not in sys.path:
 from utils.api_client import APIClient, BACKEND_URL
 from utils.data_converter import frames_to_grid_data, get_frame_at_time
 from utils.visualization import create_heatmap, create_time_series_chart
+
+# 创建 Session 级别的 API 客户端，实现连接复用且会话隔离
+# 每个浏览器标签页（Session）拥有独立的连接池，互不干扰
+def get_api_client():
+    """获取当前 Session 的 API 客户端实例"""
+    if "api_client" not in st.session_state:
+        st.session_state.api_client = APIClient()
+    return st.session_state.api_client
 
 STATUS_LABELS = {
     "pending": "等待中",
@@ -68,7 +77,7 @@ if "last_play_time" not in st.session_state:
 if "simulation_start_time" not in st.session_state:
     st.session_state.simulation_start_time = None  # 模拟启动时的真实时间戳
 if "dt_frontend" not in st.session_state:
-    st.session_state.dt_frontend = 0.1  # 前端显示间隔（秒）
+    st.session_state.dt_frontend = 1.0  # 前端显示间隔（秒）
 if "needs_refresh" not in st.session_state:
     st.session_state.needs_refresh = False
 if "simulation_completed" not in st.session_state:
@@ -87,6 +96,8 @@ if "_skip_chart_update" not in st.session_state:
     st.session_state._skip_chart_update = False
 if "simulation_status" not in st.session_state:
     st.session_state.simulation_status = None
+if "_control_button_clicked" not in st.session_state:
+    st.session_state._control_button_clicked = False  # 控制按钮（暂停/恢复/停止）点击标记
 
 
 def render_parameter_config():
@@ -161,7 +172,8 @@ def render_parameter_config():
         
         # 前端显示参数
         st.subheader("📺 显示参数")
-        dt_frontend = st.number_input("前端显示间隔 (s)", value=0.1, step=0.05, format="%.2f", min_value=0.01, help="前端刷新显示的时间间隔，可以与后端步长不同")
+        dt_frontend = st.number_input("前端显示间隔 (s)", value=1.0, step=0.05, format="%.2f", min_value=0.01, help="前端图片显示的刷新间隔（秒），只影响图片显示频率，不影响单点查询响应速度")
+        enable_chart = st.checkbox("启用实时等高线图", value=True, help="关闭后将不显示等高线图，可大幅提升界面响应速度，但仍可进行单点查询")
 
         # 构建配置字典
         config = {
@@ -197,6 +209,7 @@ def render_parameter_config():
             },
             "display": {
                 "dt_frontend": dt_frontend,
+                "enable_chart": enable_chart,
             },
         }
 
@@ -211,11 +224,16 @@ def check_backend_connection():
     # 解析后端 URL
     url_part = BACKEND_URL.replace("http://", "").replace("https://", "")
     if ":" in url_part:
-        host, port = url_part.split(":")
-        port = int(port)
+        host, port = url_part.split(":", 1)  # 只分割第一个冒号，避免 IPv6 问题
+        try:
+            port = int(port)
+        except ValueError:
+            port = 8000
     else:
         host = url_part
         port = 8000
+    
+    print(f"[连接检查] 尝试连接到后端: {BACKEND_URL} (host={host}, port={port})")
     
     # 先检查端口是否开放（仅当 host 是 localhost 或 127.0.0.1 时）
     # 在 Docker 环境中，使用服务名（如 "backend"）时，socket 检查不可靠
@@ -227,9 +245,14 @@ def check_backend_connection():
             sock.close()
             if result != 0:
                 # 端口未开放
+                print(f"[连接检查] ✗ 端口 {port} 未开放 (错误码: {result})")
+                print(f"[连接检查] 提示: 请确保后端服务已启动，运行: cd backend && uvicorn app.main:app --reload")
                 return False
-        except Exception:
+            else:
+                print(f"[连接检查] ✓ 端口 {port} 已开放")
+        except Exception as e:
             # 如果端口检查失败，继续尝试 HTTP 请求
+            print(f"[连接检查] 端口检查异常: {e}，继续尝试 HTTP 请求")
             pass
     
     # 尝试 HTTP 连接（禁用代理）
@@ -237,7 +260,7 @@ def check_backend_connection():
         # 使用连接池限制，避免创建过多连接
         limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
         with httpx.Client(
-            timeout=10.0,
+            timeout=5.0,  # 减少超时时间，更快失败
             follow_redirects=True,
             proxies=None,  # 禁用代理，避免 502 错误
             limits=limits,
@@ -245,34 +268,65 @@ def check_backend_connection():
         ) as client:
             # 先尝试健康检查端点（最简单）
             try:
-                response = client.get(f"{BACKEND_URL}/health", timeout=5.0)
+                print(f"[连接检查] 尝试访问 /health 端点...")
+                response = client.get(f"{BACKEND_URL}/health", timeout=3.0)
                 if response.status_code == 200:
-                    return True
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as e:
-                # 如果健康检查失败，尝试根路径
-                try:
-                    response = client.get(f"{BACKEND_URL}/", timeout=5.0)
-                    if response.status_code == 200:
-                        return True
-                except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
-                    # 尝试使用 127.0.0.1 而不是 localhost
+                    print(f"[连接检查] ✓ 后端连接成功 (HTTP {response.status_code})")
                     try:
-                        alt_url = BACKEND_URL.replace("localhost", "127.0.0.1")
-                        response = client.get(f"{alt_url}/health", timeout=5.0)
-                        if response.status_code == 200:
-                            return True
+                        health_data = response.json()
+                        print(f"[连接检查] 健康状态: {health_data}")
                     except:
                         pass
+                    return True
+                else:
+                    print(f"[连接检查] ✗ /health 返回非 200 状态: {response.status_code}")
+                    return False
+            except httpx.ConnectError as e:
+                print(f"[连接检查] ✗ 连接错误: {e}")
+                print(f"[连接检查] 提示: 无法连接到 {BACKEND_URL}，请检查：")
+                print(f"[连接检查]   1. 后端服务是否已启动")
+                print(f"[连接检查]   2. 端口 {port} 是否正确")
+                print(f"[连接检查]   3. 防火墙是否阻止连接")
+                # 如果健康检查失败，尝试根路径
+                try:
+                    print(f"[连接检查] 尝试访问根路径 / ...")
+                    response = client.get(f"{BACKEND_URL}/", timeout=3.0)
+                    if response.status_code == 200:
+                        print(f"[连接检查] ✓ 后端连接成功 (通过根路径, HTTP {response.status_code})")
+                        return True
+                except httpx.ConnectError:
+                    # 尝试使用 127.0.0.1 而不是 localhost
+                    if "localhost" in BACKEND_URL:
+                        try:
+                            alt_url = BACKEND_URL.replace("localhost", "127.0.0.1")
+                            print(f"[连接检查] 尝试使用 127.0.0.1 替代 localhost: {alt_url}")
+                            response = client.get(f"{alt_url}/health", timeout=3.0)
+                            if response.status_code == 200:
+                                print(f"[连接检查] ✓ 后端连接成功 (使用 127.0.0.1, HTTP {response.status_code})")
+                                return True
+                        except Exception as alt_e:
+                            print(f"[连接检查] ✗ 使用 127.0.0.1 也失败: {alt_e}")
+            except httpx.TimeoutException as e:
+                print(f"[连接检查] ✗ 连接超时: {e}")
+                print(f"[连接检查] 提示: 后端服务可能未启动或响应缓慢")
+            except httpx.RequestError as e:
+                print(f"[连接检查] ✗ 请求错误: {e}")
             
+            print(f"[连接检查] ✗ 所有连接尝试均失败")
             return False
     except Exception as e:
         # 调试信息
-        print(f"Backend connection check error: {type(e).__name__}: {e}")
+        print(f"[连接检查] ✗ 连接检查异常: {type(e).__name__}: {e}")
+        import traceback
+        print(f"[连接检查] 详细错误: {traceback.format_exc()}")
         return False
 
 
 def main():
     """主函数。"""
+    # 性能分析：记录脚本开始时间
+    script_start_time = time.time()
+    
     # 标题
     st.title("🌊 时变海浪环境模型系统")
     st.markdown("---")
@@ -289,29 +343,106 @@ def main():
     
     if not st.session_state.backend_available:
         st.error(
-            f"⚠️ 无法连接到后端服务 ({BACKEND_URL})\n\n"
-            "请确保后端服务已启动：\n"
+            f"⚠️ **无法连接到后端服务**\n\n"
+            f"**后端地址**: `{BACKEND_URL}`\n\n"
+            "**请按以下步骤排查：**\n\n"
+            "### 1. 检查后端服务是否启动\n"
             "```bash\n"
             "cd backend\n"
             "uvicorn app.main:app --reload\n"
             "```\n\n"
-            "**故障排除：**\n"
-            "1. 检查后端是否在 `http://localhost:8000` 运行\n"
-            "2. 在浏览器中访问 `http://localhost:8000/docs` 确认后端正常\n"
-            "3. 检查防火墙设置\n"
-            "4. 如果后端在不同端口，请修改 `frontend/utils/api_client.py` 中的 `BACKEND_URL`"
+            "### 2. 验证后端服务\n"
+            f"- 在浏览器中访问 `{BACKEND_URL}/docs` 查看 API 文档\n"
+            f"- 访问 `{BACKEND_URL}/health` 查看健康状态\n"
+            f"- 如果无法访问，说明后端服务未启动或端口不正确\n\n"
+            "### 3. 检查配置\n"
+            "- 如果使用 Docker，确保后端容器正在运行\n"
+            "- 如果后端在不同端口，请设置环境变量：\n"
+            "  ```bash\n"
+            "  export BACKEND_URL=http://localhost:你的端口\n"
+            "  ```\n"
+            "- 或修改 `frontend/utils/api_client.py` 中的 `BACKEND_URL`\n\n"
+            "### 4. 查看控制台日志\n"
+            "- 查看浏览器控制台（F12）是否有连接错误信息\n"
+            "- 查看 Streamlit 终端是否有 `[连接检查]` 日志\n\n"
+            "### 5. 常见问题\n"
+            "- **防火墙阻止**：检查防火墙是否允许访问后端端口\n"
+            "- **端口被占用**：检查是否有其他程序占用后端端口\n"
+            "- **Docker 网络**：如果使用 Docker，确保前端和后端在同一网络中"
         )
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("🔄 重新检查连接", type="primary"):
                 st.session_state.backend_checked = False
                 st.rerun()
         with col2:
+            if st.button("🔍 详细诊断", help="显示详细的连接诊断信息"):
+                st.session_state.show_connection_diagnostics = True
+                st.rerun()
+        with col3:
             if st.button("⏭️ 跳过检查（继续使用）"):
                 st.session_state.backend_available = True
                 st.session_state.backend_checked = True
                 st.rerun()
+        
+        # 显示详细诊断信息
+        if st.session_state.get("show_connection_diagnostics", False):
+            import os
+            with st.expander("🔍 连接诊断详情", expanded=True):
+                st.code(f"""
+后端 URL: {BACKEND_URL}
+环境变量 BACKEND_URL: {os.getenv('BACKEND_URL', '未设置')}
+
+诊断步骤：
+1. 检查环境变量...
+2. 解析 URL...
+3. 尝试连接...
+                """, language="text")
+                
+                # 执行详细诊断
+                import socket
+                url_part = BACKEND_URL.replace("http://", "").replace("https://", "")
+                if ":" in url_part:
+                    host, port = url_part.split(":")
+                    port = int(port)
+                else:
+                    host = url_part
+                    port = 8000
+                
+                st.write(f"**解析结果**: host=`{host}`, port=`{port}`")
+                
+                # 测试端口
+                if host in ("localhost", "127.0.0.1"):
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(2)
+                        result = sock.connect_ex((host, port))
+                        sock.close()
+                        if result == 0:
+                            st.success(f"✓ 端口 {port} 已开放")
+                        else:
+                            st.error(f"✗ 端口 {port} 未开放（错误码: {result}）")
+                    except Exception as e:
+                        st.warning(f"端口检查异常: {e}")
+                
+                # 测试 HTTP 连接
+                try:
+                    with httpx.Client(timeout=5.0) as client:
+                        try:
+                            response = client.get(f"{BACKEND_URL}/health")
+                            st.success(f"✓ HTTP 连接成功: {response.status_code}")
+                            st.json(response.json())
+                        except httpx.ConnectError as e:
+                            st.error(f"✗ HTTP 连接失败: {e}")
+                        except Exception as e:
+                            st.error(f"✗ HTTP 请求异常: {e}")
+                except Exception as e:
+                    st.error(f"✗ 创建 HTTP 客户端失败: {e}")
+                
+                if st.button("关闭诊断"):
+                    st.session_state.show_connection_diagnostics = False
+                    st.rerun()
         
         st.stop()
 
@@ -324,33 +455,41 @@ def main():
         if st.button("🚀 开始模拟", type="primary", use_container_width=True):
             # 直接执行，不使用spinner避免界面变白阻塞
             try:
-                api_client = APIClient()
+                api_client = get_api_client()
                 
-                # 检查是否存在正在运行的仿真任务
-                try:
-                    simulations_list = api_client.list_simulations(status="running")
-                    running_simulations = [
-                        sim for sim in simulations_list.get("simulations", [])
-                        if sim.get("status") == "running"
-                    ]
-                    
-                    # 如果存在运行中的任务，先停止它们
-                    if running_simulations:
-                        st.info(f"发现 {len(running_simulations)} 个正在运行的仿真任务，正在停止...")
-                        stop_result = api_client.stop_all_simulations()
-                        st.success(f"已停止 {stop_result.get('stopped_count', 0)} 个运行中的仿真任务")
+                # 检查当前 Session 是否有正在运行的仿真任务
+                # 只停止当前 Session 自己的任务，不影响其他 Session
+                current_simulation_id = st.session_state.get("simulation_id")
+                if current_simulation_id:
+                    try:
+                        # 检查当前任务的状态
+                        frames_response = api_client.get_frames(
+                            current_simulation_id,
+                            time=-1,
+                            timeout=2.0,
+                        )
+                        current_status = frames_response.get("status", "unknown")
                         
-                        # 清空前端的状态
-                        st.session_state.simulation_id = None
-                        st.session_state.frames = []
-                        st.session_state.simulation_status = None
-                        st.session_state.is_playing = False
-                        
-                        # 等待一小段时间，确保任务已停止
-                        time.sleep(0.5)
-                except Exception as check_error:
-                    # 如果检查失败，继续执行（可能后端不支持此接口）
-                    st.warning(f"检查运行任务时出错: {check_error}，继续创建新任务...")
+                        # 如果当前任务正在运行，先停止它
+                        if current_status in ("running", "paused"):
+                            st.info(f"检测到当前 Session 有运行中的任务 ({current_simulation_id[:8]}...)，正在停止...")
+                            try:
+                                api_client.stop_simulation(current_simulation_id, timeout=3.0)
+                                st.success("已停止当前 Session 的任务")
+                            except Exception as stop_error:
+                                st.warning(f"停止当前任务时出错: {stop_error}，继续创建新任务...")
+                            
+                            # 清空当前 Session 的状态
+                            st.session_state.simulation_id = None
+                            st.session_state.frames = []
+                            st.session_state.simulation_status = None
+                            st.session_state.is_playing = False
+                            
+                            # 等待一小段时间，确保任务已停止
+                            time.sleep(0.5)
+                    except Exception as check_error:
+                        # 如果检查失败（可能是任务不存在），继续创建新任务
+                        st.info("当前 Session 没有运行中的任务，创建新任务...")
                 
                 # 创建新的模拟任务
                 response = api_client.create_simulation(
@@ -367,6 +506,7 @@ def main():
                 # 记录模拟启动的真实时间戳（作为基础时间）
                 st.session_state.simulation_start_time = time.time()
                 st.session_state.dt_frontend = config["display"]["dt_frontend"]
+                st.session_state.enable_chart = config["display"]["enable_chart"]
                 
                 st.success(f"模拟任务创建成功！ID: {response['simulation_id'][:8]}...")
                 
@@ -376,30 +516,66 @@ def main():
                 st.session_state.last_play_time = None  # 初始化最后刷新时间
 
                 # 尝试获取初始帧（t=0），如果还没有则等待
-                frames_response = api_client.get_frames(
-                    st.session_state.simulation_id,
-                    time=0.0,  # 获取初始帧
-                )
+                # 添加重试机制，因为后端生成初始帧需要一些时间
+                initial_frame_obtained = False
+                max_retries = 5
+                retry_delay = 0.5  # 每次重试等待 0.5 秒
                 
-                if frames_response["frames"]:
-                    initial_frame = frames_response["frames"][0]
-                    st.session_state.frames = [initial_frame]
-                    
-                    # 转换为网格数据
-                    (
-                        st.session_state.lon_grid,
-                        st.session_state.lat_grid,
-                        st.session_state.height_grid,
-                        st.session_state.times,
-                    ) = frames_to_grid_data(st.session_state.frames)
-                    st.session_state.current_time_idx = 0
-                    st.success(f"获取到初始帧")
-                else:
-                    # 如果还没有初始帧，设置空frames，后续会自动获取
+                for retry in range(max_retries):
+                    try:
+                        frames_response = api_client.get_frames(
+                            st.session_state.simulation_id,
+                            time=0.0,  # 获取初始帧
+                            timeout=2.0,  # 短超时，避免长时间阻塞
+                        )
+                        
+                        if frames_response.get("frames") and len(frames_response["frames"]) > 0:
+                            initial_frame = frames_response["frames"][0]
+                            st.session_state.frames = [initial_frame]
+                            
+                            # 转换为网格数据（如果启用图表）
+                            if st.session_state.enable_chart:
+                                (
+                                    st.session_state.lon_grid,
+                                    st.session_state.lat_grid,
+                                    st.session_state.height_grid,
+                                    st.session_state.times,
+                                ) = frames_to_grid_data(st.session_state.frames)
+                                st.session_state.current_time_idx = 0
+                            
+                            initial_frame_obtained = True
+                            st.success(f"获取到初始帧")
+                            break
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            # 404 表示帧还没有生成，等待后重试
+                            if retry < max_retries - 1:
+                                time.sleep(retry_delay)
+                                continue
+                            else:
+                                # 最后一次重试失败，设置空frames，后续会自动获取
+                                st.session_state.frames = []
+                                st.info("模拟任务已创建，等待初始帧生成...（这可能需要几秒钟）")
+                                break
+                        else:
+                            # 其他 HTTP 错误，抛出异常
+                            raise
+                    except Exception as e:
+                        # 其他异常，如果是最后一次重试则优雅处理
+                        if retry < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            st.warning(f"获取初始帧时出错: {e}，后续会自动重试...")
+                            st.session_state.frames = []
+                            break
+                
+                if not initial_frame_obtained:
+                    # 如果所有重试都失败，设置空frames，后续会自动获取
                     st.session_state.frames = []
-                    st.info("模拟任务已创建，等待初始帧生成...")
+                    st.info("模拟任务已创建，等待初始帧生成...（这可能需要几秒钟）")
 
-                api_client.close()
+                # api_client.close()  # 不再关闭，因为使用全局单例复用连接
 
             except Exception as e:
                 st.error(f"模拟失败: {str(e)}")
@@ -424,11 +600,15 @@ def main():
         # 检查同步时间按钮是否被点击
         sync_button_clicked = st.session_state.get("_sync_button_clicked", False)
         
+        # 检查控制按钮是否被点击
+        control_button_clicked = st.session_state.get("_control_button_clicked", False)
+        
         # 综合判断是否为用户交互
         is_user_interaction = (
             st.session_state.get("_user_interaction", False) or
             query_button_clicked or
-            sync_button_clicked
+            sync_button_clicked or
+            bool(control_button_clicked)  # 控制按钮点击也算用户交互
         )
         
         # 如果检测到用户交互，完全跳过自动刷新逻辑
@@ -436,13 +616,20 @@ def main():
             # 完全跳过自动刷新逻辑，直接到显示部分
             skip_auto_refresh = True
             st.session_state._skip_chart_update = True  # 标记跳过图表更新
+            # 调试日志
+            if query_button_clicked:
+                print(f"[DEBUG] 查询按钮点击，跳过自动刷新")
         else:
             skip_auto_refresh = False
             st.session_state._skip_chart_update = False  # 允许图表更新
         
         # ===== 自动刷新逻辑（只在非用户交互时执行） =====
         # 即使没有帧数据，也要尝试获取
+        auto_refresh_start = time.time()
+        current_real_time = time.time()  # 提前定义，避免作用域问题
+        
         if not skip_auto_refresh and st.session_state.simulation_start_time is not None:
+            print(f"[性能分析] 进入自动刷新逻辑")
             # 确保播放状态为True（自动实时显示）
             if not st.session_state.is_playing:
                 st.session_state.is_playing = True
@@ -468,8 +655,10 @@ def main():
                 if "last_frame_check_time" not in st.session_state:
                     st.session_state.last_frame_check_time = None
                 
-                # 计算检查间隔（至少1秒，但不超过3秒，避免频繁请求导致阻塞）
-                check_interval = min(max(st.session_state.dt_frontend * 3, 1.0), 3.0)
+                # 计算检查间隔（至少2秒，但不超过5秒，避免频繁请求导致阻塞）
+                # dt_frontend 只用于控制图片显示的刷新频率，不影响单点查询
+                # 增加最小间隔到2秒，减少请求频率，避免阻塞
+                check_interval = min(max(st.session_state.dt_frontend * 5, 2.0), 5.0)
                 
                 if st.session_state.last_frame_check_time is None:
                     # 首次检查
@@ -485,14 +674,19 @@ def main():
                 if check_for_new_frames:
                     try:
                         # 使用非阻塞方式获取帧数据（快速超时，避免长时间阻塞）
-                        with APIClient() as api_client:
-                            # 获取最新帧
-                            current_frame_count = len(st.session_state.frames) if st.session_state.frames else 0
-                            # 设置较短的超时时间，避免阻塞用户操作
-                            frames_response = api_client.get_frames(
-                                st.session_state.simulation_id,
-                                time=-1,  # 获取最新帧
-                            )
+                        frame_fetch_start = time.time()
+                        api_client = get_api_client()
+                        # 获取最新帧（用于图片显示）
+                        # 使用独立的短超时（5秒），避免阻塞单点查询操作
+                        # 注意：这个操作只用于图片显示刷新，不影响单点查询
+                        # 进一步减少超时时间，确保不会长时间阻塞
+                        frames_response = api_client.get_frames(
+                            st.session_state.simulation_id,
+                            time=-1,  # 获取最新帧
+                            timeout=5.0,  # 5秒超时（从8秒减少到5秒），避免长时间阻塞
+                        )
+                        frame_fetch_time = time.time() - frame_fetch_start
+                        print(f"[性能分析] 获取帧数据耗时: {frame_fetch_time*1000:.2f} ms")
                         
                         # 检查模拟状态
                         simulation_status = frames_response.get("status", "unknown")
@@ -526,21 +720,44 @@ def main():
                                 if st.session_state.frames is None:
                                     st.session_state.frames = []
                                 st.session_state.frames.append(new_frame)
+                                
+                                # 优化：只在有新帧时才转换数据，但限制最大帧数避免内存问题
+                                # 限制保留的帧数，只保留最近的 N 帧（如最近100帧），避免内存和性能问题
+                                max_frames_to_keep = 100
+                                if len(st.session_state.frames) > max_frames_to_keep:
+                                    # 保留最近的帧
+                                    st.session_state.frames = st.session_state.frames[-max_frames_to_keep:]
+                                
                                 # 重新转换为网格数据（这个操作可能较耗时）
-                                # 只在有新帧时才执行，减少不必要的转换
-                                # 使用try-except包装，确保转换失败不影响其他功能
-                                try:
-                                    (
-                                        st.session_state.lon_grid,
-                                        st.session_state.lat_grid,
-                                        st.session_state.height_grid,
-                                        st.session_state.times,
-                                    ) = frames_to_grid_data(st.session_state.frames)
-                                    # 标记有数据变化，需要刷新
-                                    st.session_state.data_changed = True
-                                except Exception as convert_error:
-                                    # 转换失败，但不影响界面响应
-                                    print(f"帧数据转换失败: {convert_error}")
+                                # 只有启用图表时才需要转换，否则跳过以提升性能
+                                if st.session_state.get("enable_chart", True):
+                                    # 使用try-except包装，确保转换失败不影响其他功能
+                                    # 添加超时保护：如果转换时间过长，放弃本次更新
+                                    try:
+                                        import time as time_module
+                                        convert_start_time = time_module.time()
+                                        
+                                        (
+                                            st.session_state.lon_grid,
+                                            st.session_state.lat_grid,
+                                            st.session_state.height_grid,
+                                            st.session_state.times,
+                                        ) = frames_to_grid_data(st.session_state.frames)
+                                        
+                                        convert_time = time_module.time() - convert_start_time
+                                        # 记录数据转换耗时
+                                        print(f"[性能分析] frames_to_grid_data转换耗时: {convert_time*1000:.2f} ms ({convert_time:.3f} 秒)")
+                                        if convert_time > 2.0:
+                                            print(f"[警告] 数据转换耗时过长: {convert_time:.2f} 秒，考虑优化或减少帧数")
+                                        
+                                        # 标记有数据变化，需要刷新
+                                        st.session_state.data_changed = True
+                                    except Exception as convert_error:
+                                        # 转换失败，但不影响界面响应
+                                        print(f"帧数据转换失败: {convert_error}")
+                                        st.session_state.data_changed = False
+                                else:
+                                    # 图表禁用时，跳过数据转换，大幅提升性能
                                     st.session_state.data_changed = False
                             else:
                                 # 帧没有变化，不需要刷新
@@ -548,14 +765,26 @@ def main():
                         else:
                             # 没有帧数据，不需要刷新
                             st.session_state.data_changed = False
-                    except Exception as e:
-                        # 如果获取失败，继续使用已有的frames，不影响界面响应
+                    except (httpx.TimeoutException, httpx.RequestError) as e:
+                        # 如果获取失败（超时或网络错误），继续使用已有的frames，不影响界面响应
                         st.session_state.data_changed = False
-                        # 静默失败，不中断用户体验
+                        # 静默失败，不中断用户体验（图片显示刷新失败不影响单点查询）
+                        pass
+                    except Exception as e:
+                        # 其他异常也静默处理，不影响界面响应
+                        st.session_state.data_changed = False
                         pass
                 else:
                     # 本次未检查，标记为未变化
                     st.session_state.data_changed = False
+                
+                # 记录自动刷新总耗时
+                auto_refresh_time = time.time() - auto_refresh_start
+                if auto_refresh_time > 0.1:  # 只记录超过100ms的
+                    print(f"[性能分析] 自动刷新逻辑总耗时: {auto_refresh_time*1000:.2f} ms")
+        else:
+            if skip_auto_refresh:
+                print(f"[性能分析] 跳过自动刷新逻辑（用户交互）")
                 
                 # 根据模拟时间找到对应的帧索引
                 # 使用最后一帧的时间作为当前模拟时间（最准确，因为这是后端实际生成的）
@@ -573,6 +802,7 @@ def main():
                     
                     # 检查是否需要刷新（根据dt_frontend配置刷新一次）
                     # 智能刷新策略：只在有实际变化时才刷新，减少不必要的重绘
+                    # 注意：dt_frontend 只控制图片显示的刷新频率，不影响单点查询
                     should_refresh = False
                     
                     # 如果模拟已完成，停止刷新
@@ -585,8 +815,10 @@ def main():
                         should_refresh = True
                     else:
                         elapsed_since_last_refresh = current_real_time - st.session_state.last_play_time
-                        # 使用配置的前端刷新间隔（至少0.5秒，最大3秒，避免过于频繁）
-                        refresh_interval = min(max(st.session_state.dt_frontend * 2, 0.5), 3.0)
+                        # 使用配置的前端刷新间隔（至少1秒，最大5秒，避免过于频繁）
+                        # dt_frontend 只用于控制图片显示的刷新频率，不影响单点查询
+                        # 增加最小间隔到1秒，减少刷新频率，避免界面卡顿
+                        refresh_interval = min(max(st.session_state.dt_frontend * 3, 1.0), 5.0)
                         
                         if elapsed_since_last_refresh >= refresh_interval:
                             # 检查数据是否有变化或帧索引是否变化
@@ -610,7 +842,7 @@ def main():
                             st.session_state.last_rerun_time = 0
                         
                         time_since_last_rerun = current_real_time - st.session_state.last_rerun_time
-                        min_rerun_interval = 0.5  # 至少间隔0.5秒才能再次rerun，避免阻塞
+                        min_rerun_interval = 1.0  # 至少间隔1秒才能再次rerun，避免频繁刷新导致阻塞
                         
                         if time_since_last_rerun >= min_rerun_interval:
                             st.session_state.needs_refresh = True
@@ -632,11 +864,12 @@ def main():
                 status_label = STATUS_LABELS.get(status_key, "未知")
                 
                 # 计算实时信息
+                # 直接使用最新帧的时间，确保与后端实际生成的最新帧时间一致
                 if st.session_state.times is not None and len(st.session_state.times) > 0:
-                    if st.session_state.current_time_idx < len(st.session_state.times):
-                        current_time = st.session_state.times[st.session_state.current_time_idx]
-                    else:
-                        current_time = st.session_state.times[-1]
+                    # 始终使用最后一帧的时间作为当前模拟时间（最准确）
+                    current_time = st.session_state.times[-1]
+                    # 同步更新 current_time_idx 到最新帧，保持一致性
+                    st.session_state.current_time_idx = len(st.session_state.times) - 1
                     
                     if st.session_state.simulation_start_time is not None:
                         real_time_elapsed = time.time() - st.session_state.simulation_start_time
@@ -669,17 +902,17 @@ def main():
 
         with col1:
             # 显示可视化图表（使用Plotly等高线图，支持高度查询）
+            # 检查是否启用图表
+            if not st.session_state.get("enable_chart", True):
+                # 图表已禁用，显示提示信息
+                st.info("📊 实时等高线图已禁用（可在左侧参数配置中启用）\n\n✅ 单点查询功能仍然可用")
             # 检查是否有帧数据
-            if st.session_state.frames and len(st.session_state.frames) > 0 and st.session_state.times is not None and len(st.session_state.times) > 0:
-                # 使用当前索引获取数据
-                if st.session_state.current_time_idx < len(st.session_state.times):
-                    current_time = st.session_state.times[st.session_state.current_time_idx]
-                    current_height = st.session_state.height_grid[st.session_state.current_time_idx]
-                else:
-                    # 防止索引越界
-                    current_time = st.session_state.times[-1]
-                    current_height = st.session_state.height_grid[-1]
-                    st.session_state.current_time_idx = len(st.session_state.times) - 1
+            elif st.session_state.frames and len(st.session_state.frames) > 0 and st.session_state.times is not None and len(st.session_state.times) > 0:
+                # 直接使用最新帧的数据，确保与后端实际生成的最新帧一致
+                current_time = st.session_state.times[-1]
+                current_height = st.session_state.height_grid[-1]
+                # 同步更新 current_time_idx 到最新帧
+                st.session_state.current_time_idx = len(st.session_state.times) - 1
 
                 # 使用占位符避免全页面刷新
                 if "chart_placeholder" not in st.session_state:
@@ -698,13 +931,17 @@ def main():
                         st.session_state.last_chart_update_time = time.time()
                     else:
                         elapsed_since_chart_update = time.time() - st.session_state.last_chart_update_time
-                        # 图表更新间隔至少0.2秒，避免过于频繁
-                        if elapsed_since_chart_update >= 0.2:
+                        # 图表更新间隔至少0.5秒，避免过于频繁重绘导致卡顿
+                        if elapsed_since_chart_update >= 0.5:
                             chart_needs_update = True
                             st.session_state.last_chart_update_time = time.time()
                     
                     if chart_needs_update:
                         try:
+                            # 添加图表创建超时保护
+                            import time as time_module
+                            chart_start_time = time_module.time()
+                            
                             # 创建等高线图（使用Contour，支持hover查询高度）
                             fig = create_heatmap(
                                 st.session_state.lon_grid,
@@ -713,6 +950,12 @@ def main():
                                 current_time,
                                 use_fast_mode=False,  # 使用Contour等高线图，支持hover查询
                             )
+                            
+                            chart_create_time = time_module.time() - chart_start_time
+                            # 如果图表创建时间超过1秒，记录警告
+                            if chart_create_time > 1.0:
+                                print(f"警告：图表创建耗时 {chart_create_time:.2f} 秒")
+                            
                             # 在占位符中更新图表，避免全页面刷新
                             with st.session_state.chart_placeholder.container():
                                 st.plotly_chart(
@@ -739,66 +982,173 @@ def main():
         with col2:
             st.subheader("📊 数据信息")
             if st.session_state.times is not None and len(st.session_state.times) > 0:
-                # 确保 current_time 和 current_height 已定义
-                if st.session_state.current_time_idx < len(st.session_state.times):
-                    current_time = st.session_state.times[st.session_state.current_time_idx]
-                    current_height = st.session_state.height_grid[st.session_state.current_time_idx]
-                else:
-                    current_time = st.session_state.times[-1]
-                    current_height = st.session_state.height_grid[-1]
+                # 直接使用最新帧的时间，确保与后端实际生成的最新帧时间一致
+                current_time = st.session_state.times[-1]
+                # 同步更新 current_time_idx 到最新帧
+                st.session_state.current_time_idx = len(st.session_state.times) - 1
                 
-                st.metric("当前时间", f"{current_time:.2f} s")
-                st.metric("最大高度", f"{np.max(current_height):.4f} m")
-                st.metric("最小高度", f"{np.min(current_height):.4f} m")
-                st.metric("平均高度", f"{np.mean(current_height):.4f} m")
+                # 如果图表已启用，显示高度信息；否则只显示时间
+                if (st.session_state.get("enable_chart", True) and 
+                    st.session_state.height_grid is not None and 
+                    len(st.session_state.height_grid) > 0):
+                    current_height = st.session_state.height_grid[-1]
+                    st.metric("当前时间", f"{current_time:.2f} s")
+                    st.metric("最大高度", f"{np.max(current_height):.4f} m")
+                    st.metric("最小高度", f"{np.min(current_height):.4f} m")
+                    st.metric("平均高度", f"{np.mean(current_height):.4f} m")
+                else:
+                    st.metric("当前时间", f"{current_time:.2f} s")
+                    st.info("图表已禁用，高度信息不可用")
             else:
                 st.info("暂无数据")
                 
             st.markdown("### ⏯️ 控制")
             st.markdown("*模拟运行时可以随时操作*")
             
+            # 控制按钮的回调函数（在回调中直接执行逻辑，立即生效）
+            def on_pause_click():
+                """暂停按钮点击回调 - 立即执行暂停逻辑"""
+                print(f"[DEBUG] 暂停按钮 on_click 回调执行 - 立即执行逻辑")
+                st.session_state._user_interaction = True
+                st.session_state._skip_chart_update = True
+                st.session_state._control_button_clicked = "pause"
+                st.session_state.needs_refresh = False
+                
+                # 在回调中直接执行暂停逻辑
+                try:
+                    api_client = get_api_client()
+                    resp = api_client.pause_clock(
+                        st.session_state.simulation_id,
+                        timeout=3.0,
+                    )
+                    st.session_state.simulation_status = resp.get("status", "paused")
+                    st.session_state.is_playing = False
+                    print(f"[DEBUG] 暂停逻辑执行成功")
+                except httpx.TimeoutException:
+                    st.session_state._pause_error = "TimeoutException"
+                except httpx.RequestError:
+                    st.session_state._pause_error = "RequestError"
+                except Exception as e:
+                    st.session_state._pause_error = str(e)
+            
+            def on_resume_click():
+                """恢复按钮点击回调 - 立即执行恢复逻辑"""
+                st.session_state._user_interaction = True
+                st.session_state._skip_chart_update = True
+                st.session_state._control_button_clicked = "resume"
+                st.session_state.needs_refresh = False
+                
+                # 在回调中直接执行恢复逻辑
+                try:
+                    api_client = get_api_client()
+                    resp = api_client.resume_clock(
+                        st.session_state.simulation_id,
+                        timeout=3.0,
+                    )
+                    st.session_state.simulation_status = resp.get("status", "running")
+                    st.session_state.is_playing = True
+                    st.session_state.simulation_completed = False
+                    st.session_state.last_play_time = None
+                except httpx.TimeoutException:
+                    st.session_state._resume_error = "TimeoutException"
+                except httpx.RequestError:
+                    st.session_state._resume_error = "RequestError"
+                except Exception as e:
+                    st.session_state._resume_error = str(e)
+            
+            def on_stop_click():
+                """停止按钮点击回调 - 立即执行停止逻辑"""
+                st.session_state._user_interaction = True
+                st.session_state._skip_chart_update = True
+                st.session_state._control_button_clicked = "stop"
+                st.session_state.needs_refresh = False
+                
+                # 在回调中直接执行停止逻辑
+                try:
+                    api_client = get_api_client()
+                    resp = api_client.stop_simulation(
+                        st.session_state.simulation_id,
+                        timeout=3.0,
+                    )
+                    st.session_state.simulation_status = resp.get("status", "stopped")
+                    st.session_state.is_playing = False
+                    st.session_state.simulation_completed = True
+                except httpx.TimeoutException:
+                    st.session_state._stop_error = "TimeoutException"
+                except httpx.RequestError:
+                    st.session_state._stop_error = "RequestError"
+                except Exception as e:
+                    st.session_state._stop_error = str(e)
+            
             control_pause, control_resume, control_stop = st.columns(3)
             with control_pause:
-                if st.button("⏸️ 暂停", use_container_width=True, key="pause_clock_btn"):
-                    # 标记为用户交互，完全跳过自动刷新逻辑
-                    st.session_state._user_interaction = True
-                    st.session_state._skip_chart_update = True
-                    try:
-                        with APIClient() as api_client:
-                            resp = api_client.pause_clock(st.session_state.simulation_id)
-                        st.session_state.simulation_status = resp.get("status", "paused")
-                        st.session_state.is_playing = False
-                    except Exception as e:
-                        st.error(f"暂停失败: {e}")
+                st.button(
+                    "⏸️ 暂停", 
+                    use_container_width=True, 
+                    key="pause_clock_btn",
+                    on_click=on_pause_click
+                )
+                # 显示错误信息（如果有）
+                if st.session_state.get("_pause_error"):
+                    error = st.session_state._pause_error
+                    st.session_state._pause_error = None  # 清除错误
+                    if "Timeout" in error or "timeout" in error.lower():
+                        st.error("⏱️ 暂停操作超时，请稍后重试。")
+                    elif "RequestError" in error or "网络" in error:
+                        st.error("🌐 网络错误: 无法连接到后端服务。")
+                    else:
+                        st.error(f"暂停失败: {error}")
+                # 清除标记（如果操作已完成）
+                if st.session_state.get("_control_button_clicked") == "pause":
+                    st.session_state._control_button_clicked = False
+                    st.session_state._user_interaction = False
+                    st.session_state._skip_chart_update = False
             
             with control_resume:
-                if st.button("▶️ 恢复", use_container_width=True, key="resume_clock_btn"):
-                    # 标记为用户交互，完全跳过自动刷新逻辑
-                    st.session_state._user_interaction = True
-                    st.session_state._skip_chart_update = True
-                    try:
-                        with APIClient() as api_client:
-                            resp = api_client.resume_clock(st.session_state.simulation_id)
-                        st.session_state.simulation_status = resp.get("status", "running")
-                        st.session_state.is_playing = True
-                        st.session_state.simulation_completed = False
-                        st.session_state.last_play_time = None
-                    except Exception as e:
-                        st.error(f"恢复失败: {e}")
+                st.button(
+                    "▶️ 恢复", 
+                    use_container_width=True, 
+                    key="resume_clock_btn",
+                    on_click=on_resume_click
+                )
+                # 显示错误信息（如果有）
+                if st.session_state.get("_resume_error"):
+                    error = st.session_state._resume_error
+                    st.session_state._resume_error = None  # 清除错误
+                    if "Timeout" in error or "timeout" in error.lower():
+                        st.error("⏱️ 恢复操作超时，请稍后重试。")
+                    elif "RequestError" in error or "网络" in error:
+                        st.error("🌐 网络错误: 无法连接到后端服务。")
+                    else:
+                        st.error(f"恢复失败: {error}")
+                # 清除标记（如果操作已完成）
+                if st.session_state.get("_control_button_clicked") == "resume":
+                    st.session_state._control_button_clicked = False
+                    st.session_state._user_interaction = False
+                    st.session_state._skip_chart_update = False
             
             with control_stop:
-                if st.button("⏹️ 停止", use_container_width=True, key="stop_sim_btn"):
-                    # 标记为用户交互，完全跳过自动刷新逻辑
-                    st.session_state._user_interaction = True
-                    st.session_state._skip_chart_update = True
-                    try:
-                        with APIClient() as api_client:
-                            resp = api_client.stop_simulation(st.session_state.simulation_id)
-                        st.session_state.simulation_status = resp.get("status", "stopped")
-                        st.session_state.is_playing = False
-                        st.session_state.simulation_completed = True
-                    except Exception as e:
-                        st.error(f"停止失败: {e}")
+                st.button(
+                    "⏹️ 停止", 
+                    use_container_width=True, 
+                    key="stop_sim_btn",
+                    on_click=on_stop_click
+                )
+                # 显示错误信息（如果有）
+                if st.session_state.get("_stop_error"):
+                    error = st.session_state._stop_error
+                    st.session_state._stop_error = None  # 清除错误
+                    if "Timeout" in error or "timeout" in error.lower():
+                        st.error("⏱️ 停止操作超时，请稍后重试。")
+                    elif "RequestError" in error or "网络" in error:
+                        st.error("🌐 网络错误: 无法连接到后端服务。")
+                    else:
+                        st.error(f"停止失败: {error}")
+                # 清除标记（如果操作已完成）
+                if st.session_state.get("_control_button_clicked") == "stop":
+                    st.session_state._control_button_clicked = False
+                    st.session_state._user_interaction = False
+                    st.session_state._skip_chart_update = False
 
         # 单点查询（独立于播放状态，随时可查询）
         st.markdown("---")
@@ -868,48 +1218,153 @@ def main():
                 else:
                     st.session_state.query_time = -1.0  # 使用 -1 表示最新帧
             with col_btn:
-                if st.button("📌", help="使用当前播放时间", key="sync_time_btn"):
-                    # 标记为用户交互，避免触发自动刷新逻辑
+                # 同步时间按钮的回调函数
+                def on_sync_time_click():
+                    """同步时间按钮点击回调"""
                     st.session_state._sync_button_clicked = True
                     st.session_state._user_interaction = True
-                    st.session_state._skip_chart_update = True  # 跳过图表更新
+                    st.session_state._skip_chart_update = True
+                    st.session_state.needs_refresh = False
                     st.session_state.use_latest_frame = False
-                    # 确保 current_time 已定义
+                    # 同步当前播放时间（使用最新帧的时间）
                     if st.session_state.times is not None and len(st.session_state.times) > 0:
-                        if st.session_state.current_time_idx < len(st.session_state.times):
-                            current_time = st.session_state.times[st.session_state.current_time_idx]
-                        else:
-                            current_time = st.session_state.times[-1]
+                        # 直接使用最新帧的时间，确保与后端实际生成的最新帧时间一致
+                        current_time = st.session_state.times[-1]
                         st.session_state.query_time = float(current_time)
-                    # Streamlit按钮点击会自动触发重新运行，不需要手动rerun
+                        # 同步更新 current_time_idx 到最新帧
+                        st.session_state.current_time_idx = len(st.session_state.times) - 1
+                
+                st.button(
+                    "📌", 
+                    help="使用当前播放时间", 
+                    key="sync_time_btn",
+                    on_click=on_sync_time_click
+                )
 
+        # 查询按钮的回调函数（在按钮点击时立即执行，早于脚本主体）
+        def on_query_click():
+            """查询按钮点击回调，立即设置标记避免自动刷新"""
+            st.session_state._query_button_clicked = True
+            st.session_state._user_interaction = True
+            st.session_state._skip_chart_update = True
+            st.session_state.needs_refresh = False
+        
         query_button_col1, query_button_col2 = st.columns([1, 4])
         with query_button_col1:
-            if st.button("🔍 查询", type="primary", use_container_width=True):
-                # 标记为用户交互，避免触发自动刷新逻辑导致阻塞
-                st.session_state._query_button_clicked = True
-                st.session_state._user_interaction = True
-                st.session_state._skip_chart_update = True  # 跳过图表更新
+            # 使用 on_click 回调，确保标记在脚本开头就能检测到
+            query_clicked = st.button(
+                "🔍 查询", 
+                type="primary", 
+                use_container_width=True,
+                on_click=on_query_click,
+                key="query_button"
+            )
+            
+            if query_clicked:
+                # 按钮被点击，执行查询逻辑
+                print(f"\n{'='*60}")
+                print(f"[性能分析] 查询按钮点击 - 开始")
+                total_start = time.time()
                 
-                # 使用更短的超时时间，避免长时间阻塞用户操作
-                try:
-                    # 使用 APIClient（会自动使用 BACKEND_URL 环境变量，Docker 环境中使用服务名）
-                    query_time_value = -1.0 if st.session_state.use_latest_frame else st.session_state.query_time
-                    with APIClient() as api_client:
+                # 检查 simulation_id 是否存在
+                if not st.session_state.simulation_id:
+                    st.error("❌ **查询失败**：当前没有活动的模拟任务\n\n请先创建模拟任务后再进行查询。")
+                    st.session_state.query_result = None
+                else:
+                    # 单点查询使用独立的短超时，确保快速响应
+                    # 查询操作不应该受显示间隔影响
+                    # 使用 spinner 显示查询进度，但不阻塞其他操作
+                    try:
+                        query_time_value = -1.0 if st.session_state.use_latest_frame else st.session_state.query_time
+                        
+                        # 使用全局单例 API 客户端，实现连接复用
+                        # 查询操作完全独立，不受显示刷新逻辑影响
+                        print(f"[性能分析] 准备查询参数耗时: {(time.time() - total_start)*1000:.2f} ms")
+                        
+                        api_start = time.time()
+                        api_client = get_api_client()
                         result = api_client.query_point(
-                            simulation_id=st.session_state.simulation_id,
-                            lon=query_lon,
-                            lat=query_lat,
-                            time=query_time_value,
-                        )
-                    st.session_state.query_result = result
-                    # 不显示额外的成功消息，避免界面闪烁
-                    # Streamlit按钮点击会自动触发重新运行
-                    # 已标记用户交互，会跳过自动刷新逻辑
-                except Exception as e:
-                    # 查询失败时显示错误，但不影响其他功能
-                    st.error(f"查询失败: {str(e)}")
-                    st.session_state.query_result = None  # 清除之前的结果
+                                simulation_id=st.session_state.simulation_id,
+                                lon=query_lon,
+                                lat=query_lat,
+                                time=query_time_value,
+                                timeout=3.0,  # 3秒超时，确保快速响应（从5秒减少到3秒）
+                            )
+                        api_time = time.time() - api_start
+                        print(f"[性能分析] API查询耗时: {api_time*1000:.2f} ms ({api_time:.3f} 秒)")
+                        
+                        result_start = time.time()
+                        st.session_state.query_result = result
+                        result_time = time.time() - result_start
+                        print(f"[性能分析] 保存结果耗时: {result_time*1000:.2f} ms")
+                        
+                        total_time = time.time() - total_start
+                        print(f"[性能分析] 查询总耗时: {total_time*1000:.2f} ms ({total_time:.3f} 秒)")
+                        print(f"{'='*60}\n")
+                        
+                        # 查询成功，不显示额外消息，避免界面闪烁
+                    except httpx.TimeoutException:
+                        print(f"[性能分析] 查询超时")
+                        print(f"{'='*60}\n")
+                        # 查询超时，显示友好的错误提示
+                        st.error("⏱️ 查询超时，请稍后重试。如果问题持续，请检查后端服务状态。")
+                        st.session_state.query_result = None
+                    except httpx.HTTPStatusError as e:
+                        print(f"[性能分析] HTTP错误: {e.response.status_code}")
+                        print(f"{'='*60}\n")
+                        # HTTP 错误（如 404, 500 等）
+                        # 尝试获取后端返回的详细错误信息
+                        try:
+                            error_detail = e.response.json().get("detail", "")
+                        except:
+                            error_detail = e.response.text if hasattr(e.response, 'text') else ""
+                        
+                        error_msg = f"查询失败: HTTP {e.response.status_code}"
+                        if e.response.status_code == 404:
+                            error_detail_lower = error_detail.lower()
+                            if "not found" in error_detail_lower and "has no results" not in error_detail_lower:
+                                # 任务确实不存在
+                                error_msg += f"\n\n**原因**：模拟任务不存在（ID: {st.session_state.simulation_id[:8]}...）\n\n"
+                                error_msg += "**可能的原因**：\n"
+                                error_msg += "1. 任务已被停止或清理\n"
+                                error_msg += "2. 后端服务重启，任务丢失\n"
+                                error_msg += "3. 任务 ID 不正确\n\n"
+                                error_msg += "**解决方案**：请重新创建模拟任务"
+                            elif "is running" in error_detail_lower or "is paused" in error_detail_lower:
+                                # 任务正在运行/暂停，但还没有数据
+                                error_msg += f"\n\n**原因**：模拟任务正在运行，但还没有生成任何结果数据\n\n"
+                                error_msg += "**说明**：这是正常情况，任务刚创建时需要几秒钟来生成第一帧数据\n\n"
+                                error_msg += "**解决方案**：\n"
+                                error_msg += "1. 等待 3-5 秒后重试\n"
+                                error_msg += "2. 检查状态栏确认任务是否正在运行\n"
+                                error_msg += "3. 如果长时间无数据，请检查后端日志"
+                            elif "no results" in error_detail_lower:
+                                # 任务存在但没有数据（其他状态）
+                                error_msg += f"\n\n**原因**：模拟任务还没有生成任何结果数据\n\n"
+                                error_msg += "**解决方案**：请等待几秒钟后重试，或检查模拟任务是否正在运行"
+                            else:
+                                error_msg += f"\n\n**详细信息**：{error_detail}"
+                        elif e.response.status_code == 410:
+                            error_msg += f"\n\n**原因**：请求的时间已超出缓存保留范围\n\n"
+                            error_msg += f"**详细信息**：{error_detail}\n\n"
+                            error_msg += "**解决方案**：请使用最新帧（勾选'使用最新帧'）或查询更近的时间点"
+                        else:
+                            error_msg += f"\n\n**详细信息**：{error_detail}"
+                        
+                        st.error(error_msg)
+                        st.session_state.query_result = None
+                    except httpx.RequestError as e:
+                        print(f"[性能分析] 网络错误: {e}")
+                        print(f"{'='*60}\n")
+                        # 网络请求错误（连接失败等）
+                        st.error(f"🌐 网络错误: 无法连接到后端服务。请检查后端是否正常运行。")
+                        st.session_state.query_result = None
+                    except Exception as e:
+                        print(f"[性能分析] 其他异常: {e}")
+                        print(f"{'='*60}\n")
+                        # 其他异常
+                        st.error(f"查询失败: {str(e)}")
+                        st.session_state.query_result = None
 
         # 显示查询结果（使用容器，避免触发不必要的刷新）
         if "query_result_placeholder" not in st.session_state:
@@ -932,12 +1387,34 @@ def main():
     # 在脚本末尾统一处理刷新
     # 彻底避免用户交互时的刷新阻塞和过于频繁的刷新
     # 检查是否为用户交互（复选框、按钮点击等）
+    # 注意：暂停、恢复、停止按钮也会设置 _user_interaction，确保不会在按钮操作时刷新
+    
+    # 性能分析：记录脚本执行到此处的时间
+    script_elapsed = time.time() - script_start_time
+    if st.session_state.get("_query_button_clicked", False):
+        print(f"[性能分析] 脚本执行到末尾耗时: {script_elapsed*1000:.2f} ms ({script_elapsed:.3f} 秒)")
+    
+    # 检查控制按钮是否点击（暂停/恢复/停止）
+    # 注意：按钮的实际执行逻辑在脚本中间（920-1020行），这里只负责禁止自动刷新
+    # _control_button_clicked 现在是一个字符串（"pause"/"resume"/"stop"），表示哪个按钮被点击
+    control_button_clicked = st.session_state.get("_control_button_clicked", False)
+    if control_button_clicked:
+        # 标记已检测到控制按钮点击，禁止自动刷新
+        # 标记会在按钮逻辑执行后清除（见按钮逻辑部分）
+        pass
+    
+    # 检查其他用户交互
     is_user_interaction_end = (
         st.session_state.get("_user_interaction", False) or
         st.session_state.get("_query_button_clicked", False) or
         st.session_state.get("_sync_button_clicked", False) or
-        st.session_state.get("_skip_chart_update", False)
+        st.session_state.get("_skip_chart_update", False) or
+        bool(control_button_clicked)  # 控制按钮点击也算用户交互
     )
+    
+    # 如果用户交互标记存在，强制禁止刷新
+    if is_user_interaction_end:
+        st.session_state.needs_refresh = False
     
     # 只有在非用户交互且需要刷新时才rerun
     # 添加额外的防抖检查，避免过于频繁的rerun
@@ -948,7 +1425,7 @@ def main():
             st.session_state.last_rerun_time = 0
         
         time_since_last_rerun = current_time_check - st.session_state.last_rerun_time
-        min_rerun_interval = 0.5  # 至少间隔0.5秒才能再次rerun，避免阻塞
+        min_rerun_interval = 1.0  # 至少间隔1秒才能再次rerun，避免频繁刷新导致阻塞
         
         if time_since_last_rerun >= min_rerun_interval:
             st.session_state.needs_refresh = False

@@ -32,4 +32,5 @@ class SimulationTask:
     frames: List[SimulationFrame] = field(default_factory=list)  # 流式帧列表（异步计算）
     clock_paused: bool = False  # 是否暂停外部时钟
     stop_requested: bool = False  # 是否请求停止模拟
+    latest_frame_grid_cache: Optional[WaveGrid] = None  # 最新帧的WaveGrid缓存（用于快速查询）
 

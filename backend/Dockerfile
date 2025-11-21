@@ -45,8 +45,9 @@ COPY backend/ .
 # 暴露端口
 EXPOSE 8000
 
-# 健康检查（使用curl作为fallback，因为httpx可能未安装）
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+# 健康检查（使用 Python 标准库，不依赖外部工具）
+# 增加启动等待时间，给应用更多时间启动
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()" || exit 1
 
 # 启动命令

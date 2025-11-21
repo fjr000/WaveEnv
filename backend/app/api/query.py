@@ -88,6 +88,25 @@ def _build_wave_grid_from_frames(frames, region):
     )
 
 
+def _find_closest_frame(frames, target_time):
+    """
+    在给定的帧列表中找到时间最接近 target_time 的帧。
+    """
+    if not frames:
+        return None
+    
+    closest_frame = None
+    min_time_diff = float("inf")
+    
+    for frame in frames:
+        time_diff = abs(frame.time - target_time)
+        if time_diff < min_time_diff:
+            min_time_diff = time_diff
+            closest_frame = frame
+    
+    return closest_frame
+
+
 @router.get(
     "/simulation/{simulation_id}/frames",
     response_model=SimulationFramesResponse,
@@ -150,10 +169,20 @@ async def get_simulation_frames(
                 frames=[frame],
             )
         else:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Simulation {simulation_id} has no results yet",
-            )
+            # 任务存在但没有数据，根据任务状态返回不同的错误信息
+            if task.status in ("running", "paused"):
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Simulation {simulation_id} is {task.status} but has no results yet. "
+                        f"Please wait a few seconds and try again."
+                    ),
+                )
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Simulation {simulation_id} has no results yet (status: {task.status})",
+                )
     
     # 获取指定时刻的数据
     target_time = time
@@ -219,10 +248,20 @@ async def get_simulation_frames(
             frames=[frame],
         )
     else:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Simulation {simulation_id} has no results yet",
-        )
+        # 任务存在但没有数据，根据任务状态返回不同的错误信息
+        if task.status in ("running", "paused"):
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Simulation {simulation_id} is {task.status} but has no results yet. "
+                    f"Please wait a few seconds and try again."
+                ),
+            )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Simulation {simulation_id} has no results yet (status: {task.status})",
+            )
 
 
 @router.get(
@@ -246,94 +285,153 @@ async def query_wave_at_point(
     
     特殊值：time=-1 表示获取最新帧的信息（最后一个可用帧）。
     """
+    import time as time_module
+    query_start = time_module.time()
+    print(f"\n[后端性能] ========== 查询开始 ==========")
+    
     # 获取任务
+    step_start = time_module.time()
     task = get_simulation_task(simulation_id)
+    print(f"[后端性能] 获取任务耗时: {(time_module.time() - step_start)*1000:.2f} ms")
     if task is None:
         raise HTTPException(
             status_code=404,
             detail=f"Simulation {simulation_id} not found",
         )
 
-    # 处理 time=-1 的特殊情况（获取最新帧）
-    query_time = time
-    if query_time == -1:
-        # 获取最新帧的时间
-        if task.frames:
-            # 使用frames时，获取最后一帧的时间
-            query_time = task.frames[-1].time
-        elif task.wave_grid is not None:
-            # 使用wave_grid时，获取最后一个时间点
-            query_time = task.wave_grid.times[-1]
+    has_frames = bool(task.frames)
+    has_wave_grid = task.wave_grid is not None and task.wave_grid.times.size > 0 if task.wave_grid is not None else False
+
+    if not has_frames and not has_wave_grid:
+        # 任务存在但没有数据，根据任务状态返回不同的错误信息
+        if task.status in ("running", "paused"):
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Simulation {simulation_id} is {task.status} but has no results yet. "
+                    f"Please wait a few seconds and try again, or check if the simulation is generating frames."
+                ),
+            )
         else:
             raise HTTPException(
                 status_code=404,
-                detail=f"Simulation {simulation_id} has no results yet",
+                detail=f"Simulation {simulation_id} has no results yet (status: {task.status})",
             )
-    
-    # 检查缓存保留时间，验证请求时间是否在缓存范围内
+
+    # 处理 time=-1：使用最新帧时间作为查询时间
+    if time == -1:
+        if has_frames:
+            requested_time = task.frames[-1].time
+        elif has_wave_grid:
+            requested_time = float(task.wave_grid.times[-1])
+        else:
+            # 任务存在但没有数据，根据任务状态返回不同的错误信息
+            if task.status in ("running", "paused"):
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Simulation {simulation_id} is {task.status} but has no results yet. "
+                        f"Please wait a few seconds and try again, or check if the simulation is generating frames."
+                    ),
+                )
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Simulation {simulation_id} has no results yet (status: {task.status})",
+                )
+    else:
+        requested_time = time
+
+    # 检查缓存保留时间限制
     cache_retention_time = task.time_config.cache_retention_time
     if cache_retention_time is not None:
-        if task.frames:
+        latest_time = None
+        if has_frames:
             latest_time = task.frames[-1].time
-            cache_time_range = (latest_time - cache_retention_time, latest_time)
-            
-            if query_time < cache_time_range[0]:
-                raise HTTPException(
-                    status_code=410,  # 410 Gone - 资源已被淘汰
-                    detail=(
-                        f"请求的时间 {query_time:.2f} s 已超出缓存保留范围。"
-                        f"当前缓存范围: [{cache_time_range[0]:.2f}, {cache_time_range[1]:.2f}] s "
-                        f"(保留时间: {cache_retention_time:.2f} s)"
-                    )
-                )
-        elif task.wave_grid is not None:
-            # 对于 wave_grid，也检查缓存范围
-            latest_time = task.wave_grid.times[-1]
-            cache_time_range = (latest_time - cache_retention_time, latest_time)
-            
-            if query_time < cache_time_range[0]:
+        elif has_wave_grid:
+            latest_time = float(task.wave_grid.times[-1])
+        
+        if latest_time is not None:
+            cache_start = latest_time - cache_retention_time
+            if requested_time < cache_start:
                 raise HTTPException(
                     status_code=410,
                     detail=(
-                        f"请求的时间 {query_time:.2f} s 已超出缓存保留范围。"
-                        f"当前缓存范围: [{cache_time_range[0]:.2f}, {cache_time_range[1]:.2f}] s "
+                        f"请求的时间 {requested_time:.2f} s 已超出缓存保留范围。"
+                        f"当前缓存范围: [{cache_start:.2f}, {latest_time:.2f}] s "
                         f"(保留时间: {cache_retention_time:.2f} s)"
                     )
                 )
 
-    # 优先使用wave_grid，如果没有则从frames构建
-    wave_grid = task.wave_grid
-    if wave_grid is None:
-        if not task.frames:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Simulation {simulation_id} has no results yet",
-            )
-        # 从frames构建wave_grid用于查询
-        wave_grid = _build_wave_grid_from_frames(task.frames, task.region)
-        if wave_grid is None:
+    # 无时间插值：使用与请求时间最接近的单帧数据
+    step_start = time_module.time()
+    if has_frames:
+        target_frame = _find_closest_frame(task.frames, requested_time)
+        if target_frame is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Simulation {simulation_id} has no valid results",
             )
+        actual_time = float(target_frame.time)
+        print(f"[后端性能] 查找最近帧耗时: {(time_module.time() - step_start)*1000:.2f} ms")
+        
+        # 优化：如果缓存的最新帧网格存在且时间匹配，直接使用缓存
+        cache_check_start = time_module.time()
+        if (task.latest_frame_grid_cache is not None and 
+            len(task.latest_frame_grid_cache.times) > 0 and
+            abs(task.latest_frame_grid_cache.times[0] - actual_time) < 1e-6):
+            target_wave_grid = task.latest_frame_grid_cache
+            print(f"[后端性能] 缓存命中，耗时: {(time_module.time() - cache_check_start)*1000:.2f} ms")
+        else:
+            # 否则构建单帧网格并缓存
+            build_start = time_module.time()
+            single_wave_grid = _build_wave_grid_from_frames([target_frame], task.region)
+            build_time = time_module.time() - build_start
+            print(f"[后端性能] 构建单帧网格耗时: {build_time*1000:.2f} ms ({build_time:.3f} 秒)")
+            
+            task.latest_frame_grid_cache = single_wave_grid
+            # 持久化缓存到存储
+            storage_start = time_module.time()
+            from app.core.storage import task_storage
+            task_storage.update_task(task)
+            print(f"[后端性能] 持久化缓存耗时: {(time_module.time() - storage_start)*1000:.2f} ms")
+            target_wave_grid = single_wave_grid
+    elif has_wave_grid:
+        wave_grid = task.wave_grid
+        times = wave_grid.times
+        time_idx = int(np.argmin(np.abs(times - requested_time)))
+        actual_time = float(times[time_idx])
+        target_wave_grid = wave_grid
+    else:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Simulation {simulation_id} has no valid results",
+        )
 
-    # 执行插值查询
     try:
+        interp_start = time_module.time()
         wave_height = query_point(
-            wave_grid=wave_grid,
+            wave_grid=target_wave_grid,
             lon=lon,
             lat=lat,
-            time=query_time,  # 使用处理后的时间
+            time=actual_time,
         )
+        print(f"[后端性能] 插值计算耗时: {(time_module.time() - interp_start)*1000:.2f} ms")
+        
+        total_time = time_module.time() - query_start
+        print(f"[后端性能] 查询总耗时: {total_time*1000:.2f} ms ({total_time:.3f} 秒)")
+        print(f"[后端性能] ========== 查询结束 ==========\n")
 
         return PointQueryResponse(
             simulation_id=simulation_id,
-            time=query_time,  # 返回实际使用的时间
+            time=actual_time,
             lon=lon,
             lat=lat,
             wave_height=wave_height,
         )
     except Exception as e:
+        print(f"[后端性能] 查询失败: {e}")
+        print(f"[后端性能] ========== 查询结束 ==========\n")
         raise HTTPException(
             status_code=500,
             detail=f"Query failed: {str(e)}",

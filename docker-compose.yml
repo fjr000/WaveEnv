@@ -28,11 +28,13 @@ services:
       - waveenv-network
     restart: unless-stopped
     healthcheck:
+      # 健康检查：访问 /health 端点
+      # 增加启动等待时间，给后端更多时间启动（特别是首次启动需要安装依赖）
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s  # 增加到 60 秒，给后端足够时间启动（首次启动可能需要安装依赖）
     # 资源限制（可选）
     # deploy:
     #   resources:
